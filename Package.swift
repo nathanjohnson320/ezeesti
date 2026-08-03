@@ -47,7 +47,7 @@ let package = Package(
         ),
         .testTarget(
             name: "EzeestiTutorTests",
-            dependencies: ["EzeestiTutor", "EzeestiCore", "EzeestiLLM"]
+            dependencies: ["EzeestiTutor", "EzeestiCore", "EzeestiLLM", "EzeestiASR"]
         ),
     ]
 )

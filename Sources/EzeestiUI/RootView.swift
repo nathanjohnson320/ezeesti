@@ -41,6 +41,12 @@ public struct RootView: View {
                         engine.useRuleTutor ? "Tutor: rules (run fetch-models.sh)" : "Tutor: EstLLM",
                         systemImage: engine.useRuleTutor ? "exclamationmark.triangle" : "brain"
                     )
+                    Label(
+                        engine.hasEstonianTTS
+                            ? "TTS: \(engine.ttsVoiceName ?? "Estonian")"
+                            : "TTS: run setup-neurokone.sh",
+                        systemImage: engine.hasEstonianTTS ? "speaker.wave.2" : "exclamationmark.triangle"
+                    )
                 }
             }
             .navigationTitle("ezeesti")
@@ -168,6 +174,9 @@ public struct PracticeView: View {
                     engine.retryCurrent()
                 }
                 .buttonStyle(.borderedProminent)
+                Button("Hear correction") {
+                    Task { await engine.speakCorrection() }
+                }
                 Button("Skip") {
                     engine.advanceToNextItem()
                 }

@@ -41,10 +41,11 @@ public struct LlamaCppCLIService: LanguageModeling {
             executable: binaryPath,
             arguments: [
                 "-m", modelPath.path,
-                "-n", "256",
-                "-c", "\(contextSize)",
+                "-n", "128",
+                "-c", "2048",
                 "--temp", "\(temperature)",
                 "-no-cnv",
+                "--no-display-prompt",
                 "-p", prompt,
             ]
         )
@@ -143,7 +144,13 @@ enum LlamaProcessRunner {
                     let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
                     if process.terminationStatus != 0 {
-                        continuation.resume(throwing: EzeestiError.llmFailed(err.isEmpty ? "exit \(process.terminationStatus)" : err))
+                        let message: String
+                        if process.terminationStatus == 9 {
+                            message = "Tutor model was killed (exit 9) — usually out of memory after TTS. Try again without Hear target first, or close other heavy apps."
+                        } else {
+                            message = err.isEmpty ? "exit \(process.terminationStatus)" : err
+                        }
+                        continuation.resume(throwing: EzeestiError.llmFailed(message))
                         return
                     }
                     // llama-cli often prints prompt echo; keep the last non-empty block.

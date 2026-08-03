@@ -30,24 +30,20 @@ That is enough to exercise the speak → feedback → retry loop.
 ## Full offline stack
 
 ```bash
-chmod +x Scripts/fetch-models.sh
-./Scripts/fetch-models.sh
+chmod +x Scripts/fetch-models.sh Scripts/setup-neurokone.sh
+./Scripts/fetch-models.sh          # Whisper + EstLLM + TTS weights + CLIs (~7GB)
+./Scripts/setup-neurokone.sh       # Python venv for Neurokõne (one-time; needs python3.10)
 ```
 
-This downloads:
-
-| Asset | Source |
-|---|---|
-| ASR | `TalTechNLP/whisper-large-v3-turbo-et-verbatim-2604` ggml |
-| Tutor | `Llama-3.1-EstLLM-8B-Instruct-1125` Q4_K_M GGUF |
-| TTS assets | TartuNLP `text-to-speech-worker` v3.1.0 multispeaker |
-| CLIs | whisper.cpp + llama.cpp (Metal) |
+If you already ran `fetch-models.sh`, **do not re-run it** for TTS weights — just run `setup-neurokone.sh`.
 
 Models land in:
 
 `~/Library/Application Support/Ezeesti/Models/`
 
-Then rebuild/run the app — it auto-detects Whisper + EstLLM binaries.
+Then rebuild/run the app — it auto-detects Whisper, EstLLM, and `neurokone-cli`.
+
+**Hear target** uses Neurokõne (speaker `mari`). First play can take a while while TensorFlow / HiFi-GAN load.
 
 ## Architecture
 

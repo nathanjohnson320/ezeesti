@@ -2,7 +2,6 @@ import Foundation
 import EzeestiCore
 
 /// Offline ASR via whisper.cpp CLI (`whisper-cli`) + TalTech GGML weights.
-/// Embedding the XCFramework can replace this Process bridge later without changing TutorEngine.
 public struct WhisperCppCLIService: SpeechRecognizing {
     public let modelPath: URL
     public let binaryPath: URL
@@ -23,6 +22,9 @@ public struct WhisperCppCLIService: SpeechRecognizing {
         }
 
         let started = Date()
+        // Bias toward short Estonian learner utterances; suppress English closers.
+        let initialPrompt = "Eestikeelne kõne. Lühikesed laused."
+
         let output = try await ProcessRunner.run(
             executable: binaryPath,
             arguments: [
@@ -31,15 +33,21 @@ public struct WhisperCppCLIService: SpeechRecognizing {
                 "-l", language,
                 "-nt",
                 "-np",
+                "-sns",
+                "-nth", "0.75",
+                "-tp", "0",
+                "--prompt", initialPrompt,
             ]
         )
 
-        let text = output
+        let raw = output
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && !$0.hasPrefix("[") && !$0.hasPrefix("whisper_") }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let text = TranscriptCleaner.clean(raw)
 
         guard !text.isEmpty else {
             throw EzeestiError.transcriptionFailed("Empty transcript from whisper-cli")
@@ -53,7 +61,70 @@ public struct WhisperCppCLIService: SpeechRecognizing {
     }
 }
 
-/// Deterministic stub for UI development when models are not downloaded yet.
+/// Strip Whisper hallucinations common on short Estonian clips (trailing English / politeness).
+public enum TranscriptCleaner {
+    private static let trailingHallucinations: [String] = [
+        "thank you for watching",
+        "thanks for watching",
+        "thank you.",
+        "thank you",
+        "thanks.",
+        "thanks",
+        "subscribe",
+        "aitäh.",
+        "aitäh",
+        "tänan.",
+        "tänan",
+        "subtitl",
+        "www.",
+    ]
+
+    public static func clean(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Drop the Estonian prompt echo if the model regurgitates it.
+        for prefix in ["Eestikeelne kõne. Lühikesed laused.", "Eestikeelne kõne."] {
+            if text.lowercased().hasPrefix(prefix.lowercased()) {
+                text = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        // Repeatedly strip known trailing hallucinations (English or Estonian fillers).
+        var changed = true
+        while changed {
+            changed = false
+            let lower = text.lowercased()
+            for phrase in trailingHallucinations {
+                if lower.hasSuffix(phrase) {
+                    text = String(text.dropLast(phrase.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Also trim leftover punctuation/spaces before the hallucination.
+                    while text.last == "." || text.last == "," || text.last == " " {
+                        if text.count <= 1 { break }
+                        // Keep a single sentence-final period if the Estonian sentence had one
+                        // and we only removed an extra English clause.
+                        break
+                    }
+                    text = text.trimmingCharacters(in: CharacterSet(charactersIn: " ,;"))
+                    changed = true
+                    break
+                }
+            }
+        }
+
+        // If an English sentence was appended after Estonian (capital Thank...), cut at that boundary.
+        if let range = text.range(of: #"[\.!?]\s+(Thank|Thanks|Please|Subscribe|Hello)\b"#, options: .regularExpression) {
+            text = String(text[..<range.lowerBound]) + "."
+        }
+
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty, text.last != ".", text.last != "!", text.last != "?" {
+            // leave as-spoken; don't force punctuation
+        }
+        return text
+    }
+}
+
 public struct MockSpeechRecognizer: SpeechRecognizing {
     public var cannedText: String
 

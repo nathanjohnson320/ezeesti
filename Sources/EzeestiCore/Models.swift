@@ -86,19 +86,22 @@ public struct ModelPaths: Sendable {
     public var neurokoneDir: URL?
     public var whisperBinary: URL?
     public var llamaBinary: URL?
+    public var neurokoneBinary: URL?
 
     public init(
         whisperGGML: URL? = nil,
         estLLMGGUF: URL? = nil,
         neurokoneDir: URL? = nil,
         whisperBinary: URL? = nil,
-        llamaBinary: URL? = nil
+        llamaBinary: URL? = nil,
+        neurokoneBinary: URL? = nil
     ) {
         self.whisperGGML = whisperGGML
         self.estLLMGGUF = estLLMGGUF
         self.neurokoneDir = neurokoneDir
         self.whisperBinary = whisperBinary
         self.llamaBinary = llamaBinary
+        self.neurokoneBinary = neurokoneBinary
     }
 
     public static func defaultApplicationSupport() throws -> ModelPaths {
@@ -114,9 +117,10 @@ public struct ModelPaths: Sendable {
         return ModelPaths(
             whisperGGML: root.appendingPathComponent("whisper/ggml-model.bin"),
             estLLMGGUF: root.appendingPathComponent("llm/Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"),
-            neurokoneDir: root.appendingPathComponent("tts", isDirectory: true),
+            neurokoneDir: root.appendingPathComponent("tts/multispeaker", isDirectory: true),
             whisperBinary: root.appendingPathComponent("bin/whisper-cli"),
-            llamaBinary: root.appendingPathComponent("bin/llama-cli")
+            llamaBinary: root.appendingPathComponent("bin/llama-cli"),
+            neurokoneBinary: root.appendingPathComponent("bin/neurokone-cli")
         )
     }
 }

@@ -25,6 +25,8 @@ public final class TutorEngine: ObservableObject {
     @Published public private(set) var lastFeedback: TutorFeedback?
     @Published public private(set) var useMockASR: Bool = true
     @Published public private(set) var useRuleTutor: Bool = true
+    @Published public private(set) var hasEstonianTTS: Bool = false
+    @Published public private(set) var ttsVoiceName: String? = nil
 
     public let recorder: MicrophoneRecorder
 
@@ -78,10 +80,23 @@ public final class TutorEngine: ObservableObject {
 
         if let speaker {
             self.speaker = speaker
-        } else if let ttsDir = paths.neurokoneDir {
-            self.speaker = NeurokoneTTSService(modelDirectory: ttsDir)
+        } else if let cli = paths.neurokoneBinary,
+                  FileManager.default.isExecutableFile(atPath: cli.path) {
+            self.speaker = NeurokoneTTSService(binaryPath: cli)
         } else {
             self.speaker = SystemSpeechSynthesizer()
+        }
+
+        switch VoiceAvailability.current(neurokoneCLI: paths.neurokoneBinary) {
+        case .neurokoneCLI:
+            self.hasEstonianTTS = true
+            self.ttsVoiceName = "Neurokõne (mari)"
+        case .estonianSystemVoice(let name):
+            self.hasEstonianTTS = true
+            self.ttsVoiceName = name
+        case .unavailable:
+            self.hasEstonianTTS = false
+            self.ttsVoiceName = nil
         }
     }
 
@@ -135,18 +150,34 @@ public final class TutorEngine: ObservableObject {
 
             phase = .tutoring
             let prompt = GrammarTutorPrompt(target: item, pack: pack, transcript: transcript.text)
-            let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
-            let feedback = try TutorFeedbackParser.parse(raw)
-            lastFeedback = feedback
-            phase = .feedback
 
-            phase = .speaking
-            try await speaker.speak(feedback.correction, languageCode: "et-EE")
-            phase = .feedback
-
-            if feedback.verdict == .correct {
-                phase = .completedItem
+            let feedback: TutorFeedback
+            do {
+                let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
+                feedback = try TutorFeedbackParser.parse(raw)
+            } catch {
+                // Fall back to fast rules if EstLLM OOMs / crashes (common after Neurokõne).
+                let fallback = RuleBasedLanguageModel()
+                let raw = try await fallback.complete(system: prompt.system, user: prompt.user)
+                feedback = try TutorFeedbackParser.parse(raw)
             }
+
+            lastFeedback = feedback
+            // Do NOT auto-play Neurokõne here — loading TF+vocoder after Whisper/LLM is what
+            // makes the loop extremely slow and can kill llama (exit 9 / HALC overload).
+            // User can tap "Hear target" / a dedicated hear-correction control.
+            phase = feedback.verdict == .correct ? .completedItem : .feedback
+        } catch {
+            phase = .error(error.localizedDescription)
+        }
+    }
+
+    public func speakCorrection() async {
+        guard let correction = lastFeedback?.correction else { return }
+        do {
+            phase = .speaking
+            try await speaker.speak(correction, languageCode: "et-EE")
+            phase = lastFeedback?.verdict == .correct ? .completedItem : .feedback
         } catch {
             phase = .error(error.localizedDescription)
         }
