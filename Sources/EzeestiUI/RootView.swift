@@ -34,11 +34,11 @@ public struct RootView: View {
 
                 Section("Models") {
                     Label(
-                        engine.useMockASR ? "ASR: mock (run fetch-models.sh)" : "ASR: TalTech Whisper",
+                        engine.useMockASR ? "ASR: mock (run fetch-models.sh)" : "ASR: Whisper (in-process)",
                         systemImage: engine.useMockASR ? "exclamationmark.triangle" : "waveform"
                     )
                     Label(
-                        engine.useRuleTutor ? "Tutor: rules (run fetch-models.sh)" : "Tutor: EstLLM",
+                        engine.useRuleTutor ? "Tutor: rules (run fetch-models.sh)" : "Tutor: EstLLM (in-process)",
                         systemImage: engine.useRuleTutor ? "exclamationmark.triangle" : "brain"
                     )
                     Label(

@@ -55,8 +55,8 @@ Hear model correction → retry speaking if needed
 ## What exists today (v0 scaffold)
 
 1. Fixed lesson sentence + tip
-2. Record → ASR (mock or Whisper CLI)
-3. Tutor grammar feedback (rules or EstLLM)
+2. Record → ASR (mock or in-process Whisper)
+3. Tutor grammar feedback (rules or in-process EstLLM)
 4. Hear correction → retry / next sibling
 
 No vocab DB, FSRS, or graded reading yet.
@@ -65,11 +65,11 @@ No vocab DB, FSRS, or graded reading yet.
 
 `TutorEngine` checks Application Support paths on launch:
 
-- whisper ggml + whisper-cli → real ASR
-- EstLLM GGUF + llama-cli → real tutor
+- whisper ggml + `libEzeestiWhisper.dylib` → real in-process ASR
+- EstLLM GGUF + `libEzeestiLlama.dylib` → real in-process tutor
 - otherwise mocks / rules so UI development is unblocked
 
-Only one heavy model needs to be hot at a time for the turn-based loop.
+Only one heavy LLM needs to be hot at a time for the turn-based loop (EstLLM unloads after each tutoring turn). Whisper stays warm.
 
 ## Next build slices
 
@@ -81,7 +81,7 @@ Only one heavy model needs to be hot at a time for the turn-based loop.
 
 ## Later
 
-- Embed whisper.cpp / llama.cpp XCFrameworks (drop CLI)
-- Real Neurokõne inference
+- True XCFramework packaging if/when shipping iOS
+- Real Neurokõne inference in-process (still Python CLI today)
 - Morph analyzer (Vabamorf) for better lemma matching
 - Phoneme-level pronunciation coaching

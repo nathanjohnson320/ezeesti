@@ -84,24 +84,40 @@ public struct ModelPaths: Sendable {
     public var whisperGGML: URL?
     public var estLLMGGUF: URL?
     public var neurokoneDir: URL?
-    public var whisperBinary: URL?
-    public var llamaBinary: URL?
+    /// Directory containing `libEzeestiWhisper.dylib` (+ whisper/ggml deps).
+    public var whisperLibDir: URL?
+    /// Directory containing `libEzeestiLlama.dylib` (+ llama/ggml deps).
+    public var llamaLibDir: URL?
     public var neurokoneBinary: URL?
 
     public init(
         whisperGGML: URL? = nil,
         estLLMGGUF: URL? = nil,
         neurokoneDir: URL? = nil,
-        whisperBinary: URL? = nil,
-        llamaBinary: URL? = nil,
+        whisperLibDir: URL? = nil,
+        llamaLibDir: URL? = nil,
         neurokoneBinary: URL? = nil
     ) {
         self.whisperGGML = whisperGGML
         self.estLLMGGUF = estLLMGGUF
         self.neurokoneDir = neurokoneDir
-        self.whisperBinary = whisperBinary
-        self.llamaBinary = llamaBinary
+        self.whisperLibDir = whisperLibDir
+        self.llamaLibDir = llamaLibDir
         self.neurokoneBinary = neurokoneBinary
+    }
+
+    public var whisperNativeReady: Bool {
+        guard let model = whisperGGML, let lib = whisperLibDir else { return false }
+        let fm = FileManager.default
+        return fm.fileExists(atPath: model.path)
+            && fm.fileExists(atPath: lib.appendingPathComponent("libEzeestiWhisper.dylib").path)
+    }
+
+    public var llamaNativeReady: Bool {
+        guard let model = estLLMGGUF, let lib = llamaLibDir else { return false }
+        let fm = FileManager.default
+        return fm.fileExists(atPath: model.path)
+            && fm.fileExists(atPath: lib.appendingPathComponent("libEzeestiLlama.dylib").path)
     }
 
     public static func defaultApplicationSupport() throws -> ModelPaths {
@@ -118,8 +134,8 @@ public struct ModelPaths: Sendable {
             whisperGGML: root.appendingPathComponent("whisper/ggml-model.bin"),
             estLLMGGUF: root.appendingPathComponent("llm/Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"),
             neurokoneDir: root.appendingPathComponent("tts/multispeaker", isDirectory: true),
-            whisperBinary: root.appendingPathComponent("bin/whisper-cli"),
-            llamaBinary: root.appendingPathComponent("bin/llama-cli"),
+            whisperLibDir: root.appendingPathComponent("native/whisper/lib", isDirectory: true),
+            llamaLibDir: root.appendingPathComponent("native/llama/lib", isDirectory: true),
             neurokoneBinary: root.appendingPathComponent("bin/neurokone-cli")
         )
     }

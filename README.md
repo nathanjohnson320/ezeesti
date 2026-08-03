@@ -31,13 +31,13 @@ That is enough to exercise the speak → feedback → retry loop.
 
 ```bash
 chmod +x Scripts/fetch-models.sh Scripts/setup-neurokone.sh
-./Scripts/fetch-models.sh          # Whisper + EstLLM + TTS weights + CLIs (~7GB)
+./Scripts/fetch-models.sh          # Whisper + EstLLM weights + in-process dylibs (~7GB)
 ./Scripts/setup-neurokone.sh       # Python venv for Neurokõne (one-time; needs python3.10)
 ```
 
 If you already ran `fetch-models.sh`, **do not re-run it** for TTS weights — just run `setup-neurokone.sh`.
 
-Models land in:
+Models and native libs land in:
 
 `~/Library/Application Support/Ezeesti/Models/`
 
@@ -51,15 +51,16 @@ Then rebuild/run the app — it auto-detects Whisper, EstLLM, and `neurokone-cli
 App/                 SwiftUI macOS entry
 Sources/
   EzeestiCore/       lessons, CEFR, model paths
-  EzeestiASR/        mic + whisper.cpp CLI bridge
-  EzeestiLLM/        EstLLM prompts + llama.cpp CLI bridge
-  EzeestiTTS/        system voice (+ Neurokõne placeholder)
+  EzeestiASR/        mic + in-process Whisper (dlopen)
+  EzeestiLLM/        EstLLM prompts + in-process llama.cpp (dlopen)
+  EzeestiTTS/        system voice (+ Neurokõne CLI)
   EzeestiTutor/      speak → analyze → retry engine
   EzeestiUI/         lesson list + practice screen
+Native/              C bridges compiled into libEzeesti*.dylib by fetch-models.sh
 Scripts/fetch-models.sh
 ```
 
-MVP keeps ASR/LLM as **CLI process bridges** so the learning loop ships before XCFramework embedding.
+ASR and the tutor LLM run **in-process** via Metal-backed dylibs (`libEzeestiWhisper` / `libEzeestiLlama`), loaded with `dlopen(RTLD_LOCAL)` so each engine keeps its own ggml. Weights stay on disk in Application Support. Neurokõne remains a Python CLI for now.
 
 ## License notes
 

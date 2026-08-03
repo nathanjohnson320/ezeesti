@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import EzeestiCore
 import EzeestiASR
 import EzeestiLLM
@@ -34,6 +35,7 @@ public final class TutorEngine: ObservableObject {
     private var languageModel: any LanguageModeling
     private var speaker: any TextSpeaking
     private let modelPaths: ModelPaths
+    private var terminateObserver: NSObjectProtocol?
 
     public var currentItem: LessonItem? {
         guard let pack = selectedPack, pack.items.indices.contains(itemIndex) else { return nil }
@@ -51,16 +53,11 @@ public final class TutorEngine: ObservableObject {
         self.modelPaths = paths
         self.recorder = recorder ?? MicrophoneRecorder()
 
-        let whisperReady = paths.whisperGGML.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-        let whisperBinReady = paths.whisperBinary.map { FileManager.default.isExecutableFile(atPath: $0.path) } ?? false
-        let llmReady = paths.estLLMGGUF.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-        let llamaBinReady = paths.llamaBinary.map { FileManager.default.isExecutableFile(atPath: $0.path) } ?? false
-
         if let recognizer {
             self.recognizer = recognizer
             self.useMockASR = false
-        } else if whisperReady, whisperBinReady, let model = paths.whisperGGML, let bin = paths.whisperBinary {
-            self.recognizer = WhisperCppCLIService(modelPath: model, binaryPath: bin)
+        } else if paths.whisperNativeReady, let model = paths.whisperGGML, let lib = paths.whisperLibDir {
+            self.recognizer = WhisperCppService(modelPath: model, libDir: lib)
             self.useMockASR = false
         } else {
             self.recognizer = MockSpeechRecognizer()
@@ -70,8 +67,8 @@ public final class TutorEngine: ObservableObject {
         if let languageModel {
             self.languageModel = languageModel
             self.useRuleTutor = false
-        } else if llmReady, llamaBinReady, let model = paths.estLLMGGUF, let bin = paths.llamaBinary {
-            self.languageModel = LlamaCppCLIService(modelPath: model, binaryPath: bin)
+        } else if paths.llamaNativeReady, let model = paths.estLLMGGUF, let lib = paths.llamaLibDir {
+            self.languageModel = LlamaCppService(modelPath: model, libDir: lib)
             self.useRuleTutor = false
         } else {
             self.languageModel = RuleBasedLanguageModel()
@@ -97,6 +94,33 @@ public final class TutorEngine: ObservableObject {
         case .unavailable:
             self.hasEstonianTTS = false
             self.ttsVoiceName = nil
+        }
+
+        // Free Metal-backed models before process teardown (avoids ggml residency-set assert).
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.shutdownNativeModels()
+            }
+        }
+    }
+
+    deinit {
+        if let terminateObserver {
+            NotificationCenter.default.removeObserver(terminateObserver)
+        }
+    }
+
+    /// Unload in-process Whisper / EstLLM before Metal / process teardown.
+    public func shutdownNativeModels() {
+        if let whisper = recognizer as? WhisperCppService {
+            whisper.shutdown()
+        }
+        if let llama = languageModel as? LlamaCppService {
+            llama.shutdown()
         }
     }
 
@@ -163,9 +187,9 @@ public final class TutorEngine: ObservableObject {
             }
 
             lastFeedback = feedback
-            // Do NOT auto-play Neurokõne here — loading TF+vocoder after Whisper/LLM is what
-            // makes the loop extremely slow and can kill llama (exit 9 / HALC overload).
-            // User can tap "Hear target" / a dedicated hear-correction control.
+            // Do NOT auto-play Neurokõne here — loading TF+vocoder while Whisper is warm
+            // is slow and memory-heavy. EstLLM already unloads after each tutoring turn.
+            // User can tap "Hear target" / hear-correction explicitly.
             phase = feedback.verdict == .correct ? .completedItem : .feedback
         } catch {
             phase = .error(error.localizedDescription)
