@@ -1,0 +1,13 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.cache/
+*.partial
+Models/
+*.gguf
+*.bin
+*.zip
+Ezeesti.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved

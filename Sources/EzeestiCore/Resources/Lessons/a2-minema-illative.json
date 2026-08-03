@@ -1,0 +1,39 @@
+{
+  "id": "a2-minema-illative",
+  "title": "Going somewhere (illative)",
+  "cefr": "A2",
+  "focusTip": "After minema / minna, the destination usually takes the illative (-sse / short form like poodi).",
+  "patternExplanation": "Ma lähen + destination in illative. Pattern: Ma lähen poodi / kooli / koju.",
+  "items": [
+    {
+      "id": "poodi",
+      "targetEstonian": "Ma lähen poodi.",
+      "glossEnglish": "I'm going to the store.",
+      "focusTip": "pood → poodi (illative)"
+    },
+    {
+      "id": "kooli",
+      "targetEstonian": "Ma lähen kooli.",
+      "glossEnglish": "I'm going to school.",
+      "focusTip": "kool → kooli (illative)"
+    },
+    {
+      "id": "koju",
+      "targetEstonian": "Ma lähen koju.",
+      "glossEnglish": "I'm going home.",
+      "focusTip": "kodu → koju (illative)"
+    },
+    {
+      "id": "tööle",
+      "targetEstonian": "Ma lähen tööle.",
+      "glossEnglish": "I'm going to work.",
+      "focusTip": "töö → tööle (allative; common with work)"
+    },
+    {
+      "id": "trenni",
+      "targetEstonian": "Ma lähen trenni.",
+      "glossEnglish": "I'm going to practice / the gym.",
+      "focusTip": "treening → trenni (short illative)"
+    }
+  ]
+}

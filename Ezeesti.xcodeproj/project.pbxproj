@@ -1,0 +1,366 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		6AA51A4CB54AB2B266A9E565 /* EzeestiTutor in Frameworks */ = {isa = PBXBuildFile; productRef = 1CAF9BF9CB5B961D9D964ACD /* EzeestiTutor */; };
+		6ED360BAF61D1FB50E711016 /* EzeestiASR in Frameworks */ = {isa = PBXBuildFile; productRef = 668CA640790A7C6257DD6108 /* EzeestiASR */; };
+		7284789FC87ABAF36A3A19CF /* EzeestiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 605B95C6D1CC9D648CF7E8FA /* EzeestiCore */; };
+		74C991737DA1D42209164AF6 /* EzeestiUI in Frameworks */ = {isa = PBXBuildFile; productRef = E84955808D8C5511FB2D01EF /* EzeestiUI */; };
+		A3B3FD55D2B6CB76152121A7 /* EzeestiLLM in Frameworks */ = {isa = PBXBuildFile; productRef = FD6333C8E952BACA23C4BA53 /* EzeestiLLM */; };
+		E6193D9F527E170212FFEAFA /* EzeestiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCD78943DA5EA7F4C0A61B2E /* EzeestiApp.swift */; };
+		EB9D679D41E7A7660E73A4A7 /* EzeestiTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 4E7C48542B282D8FD4974AB0 /* EzeestiTTS */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		19312E15A46B795B235EF97E /* Ezeesti.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ezeesti.entitlements; sourceTree = "<group>"; };
+		63443E22990C72E41FD40B1B /* Ezeesti.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ezeesti.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		68AFC8C3963ACDF88582155F /* ezeesti */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ezeesti; path = .; sourceTree = SOURCE_ROOT; };
+		749A93528B60DB49F96F27E3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		FCD78943DA5EA7F4C0A61B2E /* EzeestiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EzeestiApp.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		3DE19AEFA53897C7D5ABB71B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				74C991737DA1D42209164AF6 /* EzeestiUI in Frameworks */,
+				7284789FC87ABAF36A3A19CF /* EzeestiCore in Frameworks */,
+				6AA51A4CB54AB2B266A9E565 /* EzeestiTutor in Frameworks */,
+				6ED360BAF61D1FB50E711016 /* EzeestiASR in Frameworks */,
+				A3B3FD55D2B6CB76152121A7 /* EzeestiLLM in Frameworks */,
+				EB9D679D41E7A7660E73A4A7 /* EzeestiTTS in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		3623493C34FEB2102984029A /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				68AFC8C3963ACDF88582155F /* ezeesti */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		52517F2BAC10AB689635E0D3 = {
+			isa = PBXGroup;
+			children = (
+				C3B3F1F0A263EBD045A838AB /* App */,
+				3623493C34FEB2102984029A /* Packages */,
+				72192EA30D36B41D8201A3B9 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		72192EA30D36B41D8201A3B9 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				63443E22990C72E41FD40B1B /* Ezeesti.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C3B3F1F0A263EBD045A838AB /* App */ = {
+			isa = PBXGroup;
+			children = (
+				19312E15A46B795B235EF97E /* Ezeesti.entitlements */,
+				FCD78943DA5EA7F4C0A61B2E /* EzeestiApp.swift */,
+				749A93528B60DB49F96F27E3 /* Info.plist */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0E3C0DC9A61510FAA38E6104 /* Ezeesti */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3EBDCFFDE06B2995BA93B316 /* Build configuration list for PBXNativeTarget "Ezeesti" */;
+			buildPhases = (
+				3D1E83347CD0417A6C9EA17B /* Sources */,
+				3DE19AEFA53897C7D5ABB71B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Ezeesti;
+			packageProductDependencies = (
+				E84955808D8C5511FB2D01EF /* EzeestiUI */,
+				605B95C6D1CC9D648CF7E8FA /* EzeestiCore */,
+				1CAF9BF9CB5B961D9D964ACD /* EzeestiTutor */,
+				668CA640790A7C6257DD6108 /* EzeestiASR */,
+				FD6333C8E952BACA23C4BA53 /* EzeestiLLM */,
+				4E7C48542B282D8FD4974AB0 /* EzeestiTTS */,
+			);
+			productName = Ezeesti;
+			productReference = 63443E22990C72E41FD40B1B /* Ezeesti.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F3A51A7363D42AF8354B77BF /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 0D36CFCE11D040D5F85D9F4B /* Build configuration list for PBXProject "Ezeesti" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 52517F2BAC10AB689635E0D3;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D1AE07B72BA540DA416E43B9 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 72192EA30D36B41D8201A3B9 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0E3C0DC9A61510FAA38E6104 /* Ezeesti */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		3D1E83347CD0417A6C9EA17B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E6193D9F527E170212FFEAFA /* EzeestiApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0E58E7FDB536073E9966C10B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		92DFF8C22753EA97585C4B4D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		E4A69CBBD111BD8F26E1CC17 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Ezeesti.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ee.ezeesti.app;
+				PRODUCT_NAME = Ezeesti;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		F04AB1590FE0E9795B9D5D5E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Ezeesti.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ee.ezeesti.app;
+				PRODUCT_NAME = Ezeesti;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0D36CFCE11D040D5F85D9F4B /* Build configuration list for PBXProject "Ezeesti" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				92DFF8C22753EA97585C4B4D /* Debug */,
+				0E58E7FDB536073E9966C10B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		3EBDCFFDE06B2995BA93B316 /* Build configuration list for PBXNativeTarget "Ezeesti" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E4A69CBBD111BD8F26E1CC17 /* Debug */,
+				F04AB1590FE0E9795B9D5D5E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D1AE07B72BA540DA416E43B9 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1CAF9BF9CB5B961D9D964ACD /* EzeestiTutor */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiTutor;
+		};
+		4E7C48542B282D8FD4974AB0 /* EzeestiTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiTTS;
+		};
+		605B95C6D1CC9D648CF7E8FA /* EzeestiCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiCore;
+		};
+		668CA640790A7C6257DD6108 /* EzeestiASR */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiASR;
+		};
+		E84955808D8C5511FB2D01EF /* EzeestiUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiUI;
+		};
+		FD6333C8E952BACA23C4BA53 /* EzeestiLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiLLM;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = F3A51A7363D42AF8354B77BF /* Project object */;
+}

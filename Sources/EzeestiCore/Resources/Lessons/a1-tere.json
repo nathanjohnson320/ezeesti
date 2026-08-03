@@ -1,0 +1,39 @@
+{
+  "id": "a1-tere",
+  "title": "Greetings",
+  "cefr": "A1",
+  "focusTip": "Keep it short and clear. Stress the first syllable.",
+  "patternExplanation": "Basic greetings and polite replies.",
+  "items": [
+    {
+      "id": "tere",
+      "targetEstonian": "Tere!",
+      "glossEnglish": "Hello!",
+      "focusTip": null
+    },
+    {
+      "id": "tere-hommikust",
+      "targetEstonian": "Tere hommikust!",
+      "glossEnglish": "Good morning!",
+      "focusTip": null
+    },
+    {
+      "id": "aitäh",
+      "targetEstonian": "Aitäh!",
+      "glossEnglish": "Thank you!",
+      "focusTip": "ai-TÄH — long ä"
+    },
+    {
+      "id": "palun",
+      "targetEstonian": "Palun.",
+      "glossEnglish": "Please / You're welcome.",
+      "focusTip": null
+    },
+    {
+      "id": "head-aega",
+      "targetEstonian": "Head aega!",
+      "glossEnglish": "Goodbye!",
+      "focusTip": null
+    }
+  ]
+}
