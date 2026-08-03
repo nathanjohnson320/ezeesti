@@ -27,7 +27,26 @@ Run the **Ezeesti** scheme. Without models the app uses:
 
 That is enough to exercise the speak → feedback → retry loop.
 
-## Full offline stack
+## Lexicon
+
+Offline word list (~10k) from [Estonian-Wordlist-Enriched-Ekilex](https://github.com/KristjanPikhof/Estonian-Wordlist-Enriched-Ekilex) (CC-BY-SA 4.0): all CEFR-tagged lemmas (A1→C1), then frequency fill to 10k. Refresh with:
+
+```bash
+./Scripts/fetch-lexicon.sh
+```
+
+This is a **dictionary catalog**, not “known” vocabulary — your known % still starts at 0.
+
+### Packaged English glosses
+
+Ship glosses in `word-glosses.json` so the app does not need to ask EstLLM per tap. Generate offline (loads EstLLM **once**, batches ~20 words/call, resumes safely):
+
+```bash
+./Scripts/generate-glosses.sh              # A1–B2 + graded-text words
+./Scripts/generate-glosses.sh --limit 40   # smoke test
+# progress: terminal + .cache/gloss-gen/progress.log
+```
+
 
 ```bash
 chmod +x Scripts/fetch-models.sh Scripts/setup-neurokone.sh

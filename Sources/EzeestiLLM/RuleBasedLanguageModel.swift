@@ -6,8 +6,15 @@ public struct RuleBasedLanguageModel: LanguageModeling {
     public init() {}
 
     public func complete(system: String, user: String) async throws -> String {
-        _ = system
         try await Task.sleep(nanoseconds: 250_000_000)
+
+        if system.contains("Estonian–English dictionary") || system.contains("\"gloss\"") {
+            let word = extractField("Word:", from: user) ?? "word"
+            if let bundled = WordGlossCatalog.gloss(forSurface: word) {
+                return #"{"gloss":"\#(escapeJSON(bundled))"}"#
+            }
+            return #"{"gloss":"(EstLLM not installed — run fetch-models.sh)"}"#
+        }
 
         let target = extractField("Target sentence:", from: user) ?? ""
         let said = extractField("Learner said (ASR transcript):", from: user) ?? ""
@@ -41,6 +48,12 @@ public struct RuleBasedLanguageModel: LanguageModeling {
 
         let data = try JSONEncoder().encode(feedback)
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private func escapeJSON(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private func extractField(_ label: String, from text: String) -> String? {

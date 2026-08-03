@@ -5,6 +5,7 @@ public enum CEFRLevel: String, Codable, Sendable, CaseIterable, Identifiable {
     case a2 = "A2"
     case b1 = "B1"
     case b2 = "B2"
+    case c1 = "C1"
 
     public var id: String { rawValue }
 }

@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "EzeestiLLM", targets: ["EzeestiLLM"]),
         .library(name: "EzeestiTTS", targets: ["EzeestiTTS"]),
         .library(name: "EzeestiTutor", targets: ["EzeestiTutor"]),
+        .library(name: "EzeestiLearning", targets: ["EzeestiLearning"]),
         .library(name: "EzeestiUI", targets: ["EzeestiUI"]),
     ],
     targets: [
@@ -19,6 +20,8 @@ let package = Package(
             name: "EzeestiCore",
             resources: [
                 .copy("Resources/Lessons"),
+                .copy("Resources/Texts"),
+                .copy("Resources/Lexicon"),
             ]
         ),
         .target(
@@ -38,8 +41,12 @@ let package = Package(
             dependencies: ["EzeestiCore", "EzeestiASR", "EzeestiLLM", "EzeestiTTS"]
         ),
         .target(
+            name: "EzeestiLearning",
+            dependencies: ["EzeestiCore", "EzeestiASR", "EzeestiLLM", "EzeestiTTS"]
+        ),
+        .target(
             name: "EzeestiUI",
-            dependencies: ["EzeestiCore", "EzeestiTutor"]
+            dependencies: ["EzeestiCore", "EzeestiTutor", "EzeestiLearning"]
         ),
         .testTarget(
             name: "EzeestiCoreTests",
@@ -48,6 +55,14 @@ let package = Package(
         .testTarget(
             name: "EzeestiTutorTests",
             dependencies: ["EzeestiTutor", "EzeestiCore", "EzeestiLLM", "EzeestiASR"]
+        ),
+        .testTarget(
+            name: "EzeestiLearningTests",
+            dependencies: ["EzeestiLearning", "EzeestiCore"]
+        ),
+        .testTarget(
+            name: "EzeestiLLMTests",
+            dependencies: ["EzeestiLLM", "EzeestiCore"]
         ),
     ]
 )

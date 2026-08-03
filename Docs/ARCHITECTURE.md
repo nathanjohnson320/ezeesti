@@ -1,87 +1,37 @@
 # Architecture
 
-## Product decision (locked)
+## Product decision
 
-**Speech-first learning.** No writing requirement. Production is always spoken.
+**Speech-first learning.** Production is always spoken (no writing).
 
-Core systems:
+## Learning loop (implemented)
 
-- Vocab DB (lemma, forms seen, familiarity)
-- Graded input (~90%+ known words)
-- FSRS scheduling for flagged / weak words
-- Whisper ASR + EstLLM grading of spoken output
+1. Progress tracks known/learning lemmas in the background and estimates a working CEFR band
+2. Due flagged words surface as review (speak + FSRS); nothing to pick from a lesson list
+3. Recommended graded text continues at your level; all texts stay under a disclosure
+4. Tap a word → English gloss (bundled, cached, or EstLLM on demand) + CEFR/POS; flag only what you need help with
+5. Speak a short summary using flagged words; Whisper + EstLLM grade; FSRS updates
 
-## Target learning loop
+The app home is **Learn only**. Fixed-sentence Drill packs (~handful of lines) were removed from the UI — they don’t use the lexicon corpus and aren’t a curriculum.
 
-```text
-[Optional] FSRS due cards — speak the word/sentence, grade recall
-        │
-        ▼
-Open graded Estonian text (~90%+ known vs vocab DB)
-        │
-        ▼
-Parse tokens / lemmas; highlight likely unknowns
-        │
-        ▼
-User reads (silently or aloud) and taps true unknown words
-        │
-        ▼
-Unknowns → FSRS deck (lemma + form + sentence context)
-        │
-        ▼
-LLM prompt: “Summarize this text in spoken Estonian.
-             You must use: [new words]. Keep it A2 / short.”
-        │
-        ▼
-User SPEAKS the summary (mic)
-        │
-        ▼
-Whisper → transcript
-        │
-        ▼
-Grade:
-  - Did they use the required new words?
-  - Grammar / case “why” feedback (EstLLM)
-  - Pronunciation mismatch vs target forms (later)
-        │
-        ▼
-Update vocab DB + FSRS (Again / Hard / Good / Easy
-  from how well they produced the words in speech)
-        │
-        ▼
-Hear model correction → retry speaking if needed
-```
+`EzeestiTutor` / lesson packs remain in the tree for warmup and possible later pattern drills generated from the 10k lexicon + EstLLM.
 
-## What exists today (v0 scaffold)
+## Modules
 
-1. Fixed lesson sentence + tip
-2. Record → ASR (mock or in-process Whisper)
-3. Tutor grammar feedback (rules or in-process EstLLM)
-4. Hear correction → retry / next sibling
+| Module | Role |
+|---|---|
+| `EzeestiCore` | FSRS, tokenizer, graded texts, lexicon, lesson packs |
+| `EzeestiLearning` | SwiftData vocab store, `LearningEngine` |
+| `EzeestiTutor` | Warmup + unused drill engine (kept for reuse) |
+| ASR / LLM / TTS | Used by Learn |
 
-No vocab DB, FSRS, or graded reading yet.
+## Models
 
-## Model loading
-
-`TutorEngine` checks Application Support paths on launch:
-
-- whisper ggml + `libEzeestiWhisper.dylib` → real in-process ASR
-- EstLLM GGUF + `libEzeestiLlama.dylib` → real in-process tutor
-- otherwise mocks / rules so UI development is unblocked
-
-Only one heavy LLM needs to be hot at a time for the turn-based loop (EstLLM unloads after each tutoring turn). Whisper stays warm.
-
-## Next build slices
-
-1. SwiftData vocab DB (lemma, status: unknown / learning / known)
-2. Graded text packs + token highlight + tap-to-flag
-3. FSRS scheduler (open algorithm; card = word-in-context)
-4. Spoken summary prompt + ASR grade (must-use words + grammar)
-5. Session start = FSRS speech review, then new text
+Application Support `Ezeesti/Models/`: Whisper ggml, EstLLM GGUF, native dylibs, Neurokõne CLI when available.
 
 ## Later
 
-- True XCFramework packaging if/when shipping iOS
-- Real Neurokõne inference in-process (still Python CLI today)
-- Morph analyzer (Vabamorf) for better lemma matching
-- Phoneme-level pronunciation coaching
+- One shared Whisper/EstLLM instance (warmup currently on TutorEngine)
+- More graded texts / EstLLM-generated passages from lexicon
+- Vabamorf lemmas
+- Phoneme pronunciation coaching

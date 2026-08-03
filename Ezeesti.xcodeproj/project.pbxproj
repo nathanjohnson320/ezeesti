@@ -7,13 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4B2A50C3B40ACC55E9152F18 /* EzeestiTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 4E7C48542B282D8FD4974AB0 /* EzeestiTTS */; };
 		6AA51A4CB54AB2B266A9E565 /* EzeestiTutor in Frameworks */ = {isa = PBXBuildFile; productRef = 1CAF9BF9CB5B961D9D964ACD /* EzeestiTutor */; };
-		6ED360BAF61D1FB50E711016 /* EzeestiASR in Frameworks */ = {isa = PBXBuildFile; productRef = 668CA640790A7C6257DD6108 /* EzeestiASR */; };
+		6ED360BAF61D1FB50E711016 /* EzeestiLearning in Frameworks */ = {isa = PBXBuildFile; productRef = E2849F86C25604DEEB52E058 /* EzeestiLearning */; };
 		7284789FC87ABAF36A3A19CF /* EzeestiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 605B95C6D1CC9D648CF7E8FA /* EzeestiCore */; };
 		74C991737DA1D42209164AF6 /* EzeestiUI in Frameworks */ = {isa = PBXBuildFile; productRef = E84955808D8C5511FB2D01EF /* EzeestiUI */; };
-		A3B3FD55D2B6CB76152121A7 /* EzeestiLLM in Frameworks */ = {isa = PBXBuildFile; productRef = FD6333C8E952BACA23C4BA53 /* EzeestiLLM */; };
+		A3B3FD55D2B6CB76152121A7 /* EzeestiASR in Frameworks */ = {isa = PBXBuildFile; productRef = 668CA640790A7C6257DD6108 /* EzeestiASR */; };
 		E6193D9F527E170212FFEAFA /* EzeestiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCD78943DA5EA7F4C0A61B2E /* EzeestiApp.swift */; };
-		EB9D679D41E7A7660E73A4A7 /* EzeestiTTS in Frameworks */ = {isa = PBXBuildFile; productRef = 4E7C48542B282D8FD4974AB0 /* EzeestiTTS */; };
+		EB9D679D41E7A7660E73A4A7 /* EzeestiLLM in Frameworks */ = {isa = PBXBuildFile; productRef = FD6333C8E952BACA23C4BA53 /* EzeestiLLM */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,9 +33,10 @@
 				74C991737DA1D42209164AF6 /* EzeestiUI in Frameworks */,
 				7284789FC87ABAF36A3A19CF /* EzeestiCore in Frameworks */,
 				6AA51A4CB54AB2B266A9E565 /* EzeestiTutor in Frameworks */,
-				6ED360BAF61D1FB50E711016 /* EzeestiASR in Frameworks */,
-				A3B3FD55D2B6CB76152121A7 /* EzeestiLLM in Frameworks */,
-				EB9D679D41E7A7660E73A4A7 /* EzeestiTTS in Frameworks */,
+				6ED360BAF61D1FB50E711016 /* EzeestiLearning in Frameworks */,
+				A3B3FD55D2B6CB76152121A7 /* EzeestiASR in Frameworks */,
+				EB9D679D41E7A7660E73A4A7 /* EzeestiLLM in Frameworks */,
+				4B2A50C3B40ACC55E9152F18 /* EzeestiTTS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -95,6 +97,7 @@
 				E84955808D8C5511FB2D01EF /* EzeestiUI */,
 				605B95C6D1CC9D648CF7E8FA /* EzeestiCore */,
 				1CAF9BF9CB5B961D9D964ACD /* EzeestiTutor */,
+				E2849F86C25604DEEB52E058 /* EzeestiLearning */,
 				668CA640790A7C6257DD6108 /* EzeestiASR */,
 				FD6333C8E952BACA23C4BA53 /* EzeestiLLM */,
 				4E7C48542B282D8FD4974AB0 /* EzeestiTTS */,
@@ -351,6 +354,10 @@
 		668CA640790A7C6257DD6108 /* EzeestiASR */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = EzeestiASR;
+		};
+		E2849F86C25604DEEB52E058 /* EzeestiLearning */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EzeestiLearning;
 		};
 		E84955808D8C5511FB2D01EF /* EzeestiUI */ = {
 			isa = XCSwiftPackageProductDependency;

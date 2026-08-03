@@ -26,6 +26,8 @@ targets:
       - package: Ezeesti
         product: EzeestiTutor
       - package: Ezeesti
+        product: EzeestiLearning
+      - package: Ezeesti
         product: EzeestiASR
       - package: Ezeesti
         product: EzeestiLLM
