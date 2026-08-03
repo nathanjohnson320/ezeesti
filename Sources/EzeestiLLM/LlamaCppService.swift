@@ -51,6 +51,36 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         }
     }
 
+    /// Load EstLLM into GPU once, then unload weights (dylib stays) so first tutoring is faster.
+    public func warmup() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try self.ensureSymbols()
+                    self.lock.lock()
+                    defer { self.lock.unlock() }
+                    guard let loadFn = self.loadFn else {
+                        throw EzeestiError.llmFailed("llama symbols missing")
+                    }
+                    var err = [CChar](repeating: 0, count: 1024)
+                    let rc = self.modelPath.path.withCString { modelC in
+                        self.libDir.path.withCString { libC in
+                            loadFn(libC, modelC, Int32(self.contextSize), &err, Int32(err.count))
+                        }
+                    }
+                    if rc != 0 {
+                        throw EzeestiError.llmFailed(String(cString: err))
+                    }
+                    // Drop weights again so RAM is free for practice; OS/Metal caches stay hot.
+                    self.unloadFn?()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Drop model weights (also called after each completion). Keeps dylib loaded.
     public func unload() {
         lock.lock()

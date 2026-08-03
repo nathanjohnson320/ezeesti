@@ -49,6 +49,23 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         }
     }
 
+    /// Load Whisper weights + Metal shaders, and run a tiny silent decode so first real ASR is warm.
+    public func warmup() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try self.ensureLoaded()
+                    // ~0.25s silence primes encoder/decoder kernels without needing a mic clip.
+                    let samples = [Float](repeating: 0, count: 4_000)
+                    _ = try? self.runTranscribe(samples: samples)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     public func transcribe(audioURL: URL) async throws -> Transcript {
         let started = Date()
         try ensureLoaded()

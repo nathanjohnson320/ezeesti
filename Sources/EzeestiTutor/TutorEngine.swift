@@ -18,7 +18,17 @@ public final class TutorEngine: ObservableObject {
         case error(String)
     }
 
+    public enum WarmupState: Equatable {
+        case pending
+        case loadingWhisper
+        case loadingTutor
+        case ready
+        case skipped
+    }
+
     @Published public private(set) var phase: Phase = .idle
+    @Published public private(set) var warmupState: WarmupState = .pending
+    @Published public private(set) var warmupDetail: String = "Starting…"
     @Published public private(set) var packs: [LessonPack] = []
     @Published public private(set) var selectedPack: LessonPack?
     @Published public private(set) var itemIndex: Int = 0
@@ -28,6 +38,10 @@ public final class TutorEngine: ObservableObject {
     @Published public private(set) var useRuleTutor: Bool = true
     @Published public private(set) var hasEstonianTTS: Bool = false
     @Published public private(set) var ttsVoiceName: String? = nil
+
+    public var isWarmupFinished: Bool {
+        warmupState == .ready || warmupState == .skipped
+    }
 
     public let recorder: MicrophoneRecorder
 
@@ -136,6 +150,39 @@ public final class TutorEngine: ObservableObject {
             selectedPack = packs.first
             phase = .error(error.localizedDescription)
         }
+    }
+
+    /// Preload Whisper (kept warm) and prime EstLLM (load then unload) before practice.
+    public func warmupModels() async {
+        if useMockASR, useRuleTutor {
+            warmupDetail = "Using mock models"
+            warmupState = .skipped
+            return
+        }
+
+        if !useMockASR, let whisper = recognizer as? WhisperCppService {
+            warmupState = .loadingWhisper
+            warmupDetail = "Loading Whisper on GPU…"
+            do {
+                try await whisper.warmup()
+            } catch {
+                warmupDetail = "Whisper warmup failed — first recording may be slow"
+                // Continue; practice can still cold-start.
+            }
+        }
+
+        if !useRuleTutor, let llama = languageModel as? LlamaCppService {
+            warmupState = .loadingTutor
+            warmupDetail = "Priming EstLLM…"
+            do {
+                try await llama.warmup()
+            } catch {
+                warmupDetail = "EstLLM warmup failed — first check may be slow"
+            }
+        }
+
+        warmupDetail = "Ready"
+        warmupState = .ready
     }
 
     public func selectPack(_ pack: LessonPack) {

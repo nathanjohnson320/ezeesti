@@ -8,6 +8,20 @@ public struct RootView: View {
     public init() {}
 
     public var body: some View {
+        Group {
+            if engine.isWarmupFinished {
+                mainSplitView
+            } else {
+                WarmupView(engine: engine)
+            }
+        }
+        .task {
+            engine.loadLessons()
+            await engine.warmupModels()
+        }
+    }
+
+    private var mainSplitView: some View {
         NavigationSplitView {
             List(selection: Binding(
                 get: { engine.selectedPack?.id },
@@ -62,7 +76,39 @@ public struct RootView: View {
                 )
             }
         }
-        .onAppear { engine.loadLessons() }
+    }
+}
+
+private struct WarmupView: View {
+    @ObservedObject var engine: TutorEngine
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("ezeesti")
+                .font(.largeTitle.weight(.bold))
+            ProgressView()
+                .controlSize(.large)
+            Text(engine.warmupDetail)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text(stepCaption)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(40)
+    }
+
+    private var stepCaption: String {
+        switch engine.warmupState {
+        case .loadingWhisper:
+            return "First launch compiles Metal shaders — later starts are quicker."
+        case .loadingTutor:
+            return "Loading EstLLM once so grammar checks feel snappy."
+        default:
+            return "Preparing offline models…"
+        }
     }
 }
 
