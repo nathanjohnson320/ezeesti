@@ -140,7 +140,9 @@ int ezeesti_llama_complete(
         return -1;
     }
 
-    int n_tokens = llama_tokenize(vocab, prompt, prompt_len, tokens, n_tokens_max, true, true);
+    // Prompts already include Llama-3.1 `<|begin_of_text|>` (BOS). Asking
+    // tokenize to add_special would double-BOS and spam check_double_bos_eos.
+    int n_tokens = llama_tokenize(vocab, prompt, prompt_len, tokens, n_tokens_max, false, true);
     if (n_tokens < 0) {
         free(tokens);
         set_err(err, err_len, "llama_tokenize failed (prompt too long?)");
