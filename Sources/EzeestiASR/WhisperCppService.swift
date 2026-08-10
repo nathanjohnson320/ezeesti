@@ -57,7 +57,7 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
                     try self.ensureLoaded()
                     // ~0.25s silence primes encoder/decoder kernels without needing a mic clip.
                     let samples = [Float](repeating: 0, count: 4_000)
-                    _ = try? self.runTranscribe(samples: samples)
+                    _ = try? self.runTranscribe(samples: samples, initialPrompt: nil)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -66,10 +66,11 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         }
     }
 
-    public func transcribe(audioURL: URL) async throws -> Transcript {
+    public func transcribe(audioURL: URL, initialPrompt: String? = nil) async throws -> Transcript {
         let started = Date()
         try ensureLoaded()
-        let samples = try Self.loadPCM16kMono(url: audioURL)
+        var samples = try Self.loadPCM16kMono(url: audioURL)
+        samples = Self.trimSilence(samples)
         let durationSeconds = Double(samples.count) / 16_000.0
 
         if samples.count < 8_000 {
@@ -85,10 +86,11 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
             )
         }
 
+        let promptHint = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let result = try self.runTranscribe(samples: samples)
+                    let result = try self.runTranscribe(samples: samples, initialPrompt: promptHint)
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
@@ -97,7 +99,10 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         }
 
         let cleaned = TranscriptCleaner.clean(text)
-        let usable = cleaned.isEmpty ? TranscriptCleaner.collapseRepeatedWords(text.trimmingCharacters(in: .whitespacesAndNewlines)) : cleaned
+        var usable = cleaned.isEmpty ? TranscriptCleaner.collapseRepeatedWords(text.trimmingCharacters(in: .whitespacesAndNewlines)) : cleaned
+        if let expected = promptHint, !expected.isEmpty {
+            usable = TranscriptCleaner.align(toExpected: expected, transcript: usable)
+        }
         guard !usable.isEmpty else {
             throw EzeestiError.transcriptionFailed(
                 "No clear speech detected — speak louder/closer and try the sentence again."
@@ -161,7 +166,7 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         loadedModel = true
     }
 
-    private func runTranscribe(samples: [Float]) throws -> String {
+    private func runTranscribe(samples: [Float], initialPrompt: String?) throws -> String {
         lock.lock()
         defer { lock.unlock() }
         guard let transcribeFn else {
@@ -169,8 +174,11 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         }
 
         var out = [CChar](repeating: 0, count: 16_384)
-        var err = [CChar](repeating: 0, count: 1024)
-        let prompt = "Eestikeelne kõne. Lühikesed laused."
+        var err = [CChar](repeating: 0, count: 1_024)
+        // Prefer the expected sentence as bias when grading read-aloud; otherwise a short language cue.
+        let prompt = (initialPrompt?.isEmpty == false)
+            ? initialPrompt!
+            : "Eestikeelne kõne. Lühikesed laused."
 
         let rc = samples.withUnsafeBufferPointer { buf in
             language.withCString { langC in
@@ -192,6 +200,27 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
             throw EzeestiError.transcriptionFailed(String(cString: err))
         }
         return String(cString: out)
+    }
+
+    /// Drop leading/trailing near-silence so Whisper is less likely to invent filler after speech.
+    private static func trimSilence(
+        _ samples: [Float],
+        threshold: Float = 0.012,
+        padSamples: Int = 2_400 // 150ms at 16kHz
+    ) -> [Float] {
+        guard samples.count > padSamples * 2 else { return samples }
+        var start = 0
+        while start < samples.count, abs(samples[start]) < threshold {
+            start += 1
+        }
+        var end = samples.count - 1
+        while end > start, abs(samples[end]) < threshold {
+            end -= 1
+        }
+        start = max(0, start - padSamples)
+        end = min(samples.count - 1, end + padSamples)
+        guard end > start else { return samples }
+        return Array(samples[start...end])
     }
 
     private static func loadPCM16kMono(url: URL) throws -> [Float] {

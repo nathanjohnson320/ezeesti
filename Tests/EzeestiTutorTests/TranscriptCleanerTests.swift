@@ -39,6 +39,26 @@ final class TranscriptCleanerTests: XCTestCase {
         XCTAssertEqual(cleaned, "Ma lähen poodi.")
     }
 
+    func testStripsTrailingLahameHallucination() {
+        let cleaned = TranscriptCleaner.clean("Muul on ima. Lähme. Lähme.")
+        XCTAssertFalse(cleaned.lowercased().contains("lähme"), cleaned)
+        XCTAssertTrue(cleaned.lowercased().contains("muul") || cleaned.lowercased().contains("ima"), cleaned)
+    }
+
+    func testAlignDropsTrailingInventedSentences() {
+        let aligned = TranscriptCleaner.align(
+            toExpected: "Mul on ema.",
+            transcript: "Muul on ima. Lähme. Lähme."
+        )
+        XCTAssertFalse(aligned.lowercased().contains("lähme"), aligned)
+        XCTAssertTrue(
+            aligned.lowercased().contains("muul")
+                || aligned.lowercased().contains("ima")
+                || aligned.lowercased().contains("on"),
+            aligned
+        )
+    }
+
     func testDetectsHighSingleTokenFrequency() {
         let words = Array(repeating: "küsimust", count: 8).joined(separator: ", ")
         XCTAssertTrue(TranscriptCleaner.looksLikeRepetitionHallucination(words))

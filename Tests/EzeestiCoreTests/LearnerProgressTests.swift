@@ -108,6 +108,18 @@ final class LearnerProgressTests: XCTestCase {
         XCTAssertTrue(targets.allSatisfy(\.isPassageFocusCandidate))
     }
 
+    func testTargetLemmasPreferDueFirst() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForPassage(
+            workingLevel: .a1,
+            knownLemmas: ["ma", "ja", "on", "ei", "tere"],
+            dueLemmas: ["tere"],
+            limit: 1
+        )
+        XCTAssertEqual(targets.count, 1)
+        XCTAssertEqual(EstonianTokenizer.normalize(targets[0].lemma), "tere")
+    }
+
     func testTargetLemmasSkipImmediatelyKnown() {
         LexiconCatalog.shared.loadBundledIfNeeded()
         let known: Set<String> = ["ma", "ja", "on", "ei", "tere", "hommik"]
@@ -119,5 +131,14 @@ final class LearnerProgressTests: XCTestCase {
         for entry in targets {
             XCTAssertFalse(known.contains(EstonianTokenizer.normalize(entry.lemma)))
         }
+    }
+
+    func testTargetLemmasDefaultLimitIsOne() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForPassage(
+            workingLevel: .a1,
+            knownLemmas: ["ma", "ja", "on", "ei"]
+        )
+        XCTAssertEqual(targets.count, 1)
     }
 }

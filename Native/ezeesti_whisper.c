@@ -96,8 +96,8 @@ int ezeesti_whisper_transcribe(
     params.detect_language = false;
     params.initial_prompt = initial_prompt;
     params.n_threads = 4;
-    // Prefer multi-segment for longer spoken summaries.
-    params.single_segment = false;
+    // Short clips: one segment reduces trailing invented sentences ("… Lähme. Lähme.").
+    params.single_segment = n_samples < (16_000 * 6);
 
     int rc = whisper_full(g_ctx, params, samples, n_samples);
     if (rc != 0) {

@@ -2,7 +2,14 @@ import Foundation
 import EzeestiCore
 
 public protocol SpeechRecognizing: Sendable {
-    func transcribe(audioURL: URL) async throws -> Transcript
+    /// - Parameter initialPrompt: Optional Whisper bias text (e.g. the expected Estonian sentence).
+    func transcribe(audioURL: URL, initialPrompt: String?) async throws -> Transcript
+}
+
+public extension SpeechRecognizing {
+    func transcribe(audioURL: URL) async throws -> Transcript {
+        try await transcribe(audioURL: audioURL, initialPrompt: nil)
+    }
 }
 
 @MainActor

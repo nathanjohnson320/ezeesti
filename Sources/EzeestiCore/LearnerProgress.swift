@@ -131,16 +131,36 @@ public struct LearnerProgress: Sendable, Equatable {
         return report.knownRatio >= exhaustedKnownRatio
     }
 
-    /// Pick high-frequency A1/A2 **content** lemmas the learner does not yet know.
-    /// Prefers a single teachable noun/verb/adjective for a short scene (not a word list).
+    /// Pick one teachable lemma for the next read-aloud sentence.
+    /// Prefers a due word first, then already-learning, then an unknown high-frequency content word.
     public static func targetLemmasForPassage(
         workingLevel: CEFRLevel,
         knownLemmas: Set<String>,
         learningLemmas: Set<String> = [],
+        dueLemmas: [String] = [],
         alreadyFocused: Set<String> = [],
-        limit: Int = 2
+        limit: Int = 1
     ) -> [LexiconEntry] {
         LexiconCatalog.shared.loadBundledIfNeeded()
+        let cap = max(1, limit)
+        var picked: [LexiconEntry] = []
+        var pickedKeys = Set<String>()
+
+        for raw in dueLemmas {
+            guard picked.count < cap else { break }
+            let key = EstonianTokenizer.normalize(raw)
+            guard !pickedKeys.contains(key) else { continue }
+            if let entry = LexiconCatalog.shared.entry(forSurface: raw)
+                ?? LexiconCatalog.shared.entry(forSurface: key) {
+                picked.append(entry)
+            } else {
+                picked.append(LexiconEntry(lemma: key, cefr: workingLevel, pos: "", freqRank: nil))
+            }
+            pickedKeys.insert(key)
+        }
+
+        guard picked.count < cap else { return picked }
+
         let bands: [CEFRLevel]
         switch workingLevel {
         case .a1:
@@ -159,6 +179,8 @@ public struct LearnerProgress: Sendable, Equatable {
         let ranked = pool
             .filter { entry in
                 let key = EstonianTokenizer.normalize(entry.lemma)
+                if pickedKeys.contains(key) { return false }
+                // Due known words are already handled above; skip other known lemmas.
                 if knownLemmas.contains(key) { return false }
                 // Skip ultra-short glue already in seed (ma, ja, on…) unless learning.
                 if GradedTextCatalog.fallbackSeed.contains(key), !learningLemmas.contains(key) {
@@ -188,7 +210,15 @@ public struct LearnerProgress: Sendable, Equatable {
                 return lhs.lemma < rhs.lemma
             }
 
-        return Array(ranked.prefix(max(1, limit)))
+        for entry in ranked {
+            guard picked.count < cap else { break }
+            let key = EstonianTokenizer.normalize(entry.lemma)
+            guard !pickedKeys.contains(key) else { continue }
+            picked.append(entry)
+            pickedKeys.insert(key)
+        }
+
+        return picked
     }
 
     public static func focusLemmas(in texts: [GradedText]) -> Set<String> {

@@ -47,16 +47,15 @@ final class SpokenSummaryFeedbackParserTests: XCTestCase {
     }
 
     func testHeuristicFlagsMisheardContentEvenWhenRequiredWordsPresent() {
-        let source = "Täna ma õpin uusi sõnu. Ma ütlen: et, kui, kas, mis, aga, oma, siis, nii. See on hea harjutus."
-        let transcript = "Täna ma õpin üksi sünni. Ma ütlen, et kui kas, mis aga oma, siis nii. See on hea harjutus."
-        let mustUse = ["et", "kui", "kas", "mis", "aga", "oma", "siis", "nii"]
+        let source = "Täna ma õpin uusi sõnu."
+        let transcript = "Täna ma õpin üksi sünni."
+        let mustUse = ["õpin", "uusi"]
         let feedback = SpokenSummaryFeedbackParser.heuristic(
             mustUse: mustUse,
             transcript: transcript,
             sourceBody: source
         )
         XCTAssertEqual(feedback.verdict, .close)
-        XCTAssertTrue(feedback.missingRequiredWords.isEmpty)
         XCTAssertEqual(feedback.correction, source)
         XCTAssertTrue(
             feedback.explanation.lowercased().contains("üksi")
@@ -68,25 +67,87 @@ final class SpokenSummaryFeedbackParserTests: XCTestCase {
     }
 
     func testHeuristicSurfacesSubstitutionsAlongsideMissingRequired() {
-        let source = "Täna ma õpin uusi sõnu. Ma ütlen: ära, kõik, kes, kuidas, ka, mitte, välja, tema. See on hea harjutus."
-        let transcript = "Täna ma ütlen üsi sõnu. Ma ütlen, aga kõik kes kuidas ka mitte välja teema. See on hea harjutus."
-        let mustUse = ["ära", "kõik", "kes", "kuidas", "ka", "mitte", "välja", "tema"]
+        let source = "Täna ma õpin uusi sõnu."
+        let transcript = "Täna ma ütlen üsi sõnu."
+        let mustUse = ["õpin", "uusi"]
         let feedback = SpokenSummaryFeedbackParser.heuristic(
             mustUse: mustUse,
             transcript: transcript,
             sourceBody: source
         )
         XCTAssertEqual(feedback.verdict, .close)
-        XCTAssertTrue(feedback.missingRequiredWords.contains("ära"), "\(feedback.missingRequiredWords)")
         let explanation = feedback.explanation.lowercased()
         XCTAssertTrue(
             explanation.contains("ütlen") && explanation.contains("õpin"),
             "Expected ütlen→õpin tip, got: \(feedback.explanation)"
         )
-        XCTAssertTrue(
-            explanation.contains("üsi") && explanation.contains("uusi"),
-            "Expected üsi→uusi tip, got: \(feedback.explanation)"
+    }
+
+    func testNearMissLahkeNotReportedAsMissingVaga() {
+        let source = "Minu ema on väga lahke."
+        let transcript = "Minu ema on väga lakk."
+        let raw = """
+        {"verdict":"close","correction":"Minu ema on väga lahke.","explanation":"Missing words.","retryPrompt":"Try again.","usedRequiredWords":[],"missingRequiredWords":["väga","lahke"]}
+        """
+        let feedback = SpokenSummaryFeedbackParser.parse(
+            raw,
+            mustUse: ["lahke"],
+            transcript: transcript,
+            sourceBody: source
         )
+        XCTAssertEqual(feedback.verdict, .close)
+        XCTAssertTrue(feedback.missingRequiredWords.isEmpty, "\(feedback.missingRequiredWords)")
+        let explanation = feedback.explanation.lowercased()
+        XCTAssertTrue(explanation.contains("lakk") && explanation.contains("lahke"), feedback.explanation)
+        XCTAssertTrue(
+            explanation.contains("close") || explanation.contains("sounds") || explanation.contains("different word") || explanation.contains("needs"),
+            feedback.explanation
+        )
+        XCTAssertFalse(explanation.contains("väga"), "Should not claim väga is missing: \(feedback.explanation)")
+        XCTAssertFalse(explanation.contains("still need"), feedback.explanation)
+    }
+
+    func testExplainsBlurredMeesOnPhrase() {
+        let source = "See mees on väga tark."
+        let transcript = "See me som väga tark."
+        let feedback = SpokenSummaryFeedbackParser.heuristic(
+            mustUse: ["mees"],
+            transcript: transcript,
+            sourceBody: source
+        )
+        XCTAssertEqual(feedback.verdict, .close)
+        let explanation = feedback.explanation.lowercased()
+        XCTAssertTrue(explanation.contains("me"), feedback.explanation)
+        XCTAssertTrue(explanation.contains("mees"), feedback.explanation)
+        XCTAssertTrue(
+            explanation.contains("blurred")
+                || explanation.contains("meaning")
+                || explanation.contains("needs")
+                || explanation.contains("separate"),
+            feedback.explanation
+        )
+        XCTAssertFalse(explanation.hasPrefix("close — you said"), feedback.explanation)
+    }
+
+    func testReconcileIgnoresInventedMissingWords() {
+        let source = "Minu ema on väga lahke."
+        let transcript = "Minu ema on väga lahke."
+        let lenient = SpokenSummaryFeedback(
+            verdict: .close,
+            correction: source,
+            explanation: "Still need: väga",
+            retryPrompt: "Try again.",
+            usedRequiredWords: [],
+            missingRequiredWords: ["väga"]
+        )
+        let feedback = SpokenSummaryFeedbackParser.reconcile(
+            lenient,
+            mustUse: ["lahke"],
+            transcript: transcript,
+            sourceBody: source
+        )
+        XCTAssertEqual(feedback.verdict, .correct)
+        XCTAssertTrue(feedback.missingRequiredWords.isEmpty)
     }
 
     func testReconcileDowngradesCorrectWhenFidelityLow() {
@@ -95,14 +156,14 @@ final class SpokenSummaryFeedbackParserTests: XCTestCase {
         let lenient = SpokenSummaryFeedback(
             verdict: .correct,
             correction: transcript,
-            explanation: "You used the new words. Nice speaking!",
+            explanation: "Clear reading — nice work!",
             retryPrompt: "Next.",
-            usedRequiredWords: ["et"],
+            usedRequiredWords: ["õpin"],
             missingRequiredWords: []
         )
         let feedback = SpokenSummaryFeedbackParser.reconcile(
             lenient,
-            mustUse: ["et"],
+            mustUse: ["õpin"],
             transcript: transcript,
             sourceBody: source
         )

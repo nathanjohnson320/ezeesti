@@ -21,42 +21,44 @@ public struct PassageGenerationPrompt {
 
     public var system: String {
         """
-        You write short graded Estonian reading passages for CEFR \(cefr.rawValue) learners.
+        You write one graded Estonian sentence for CEFR \(cefr.rawValue) learners to read aloud.
         Always respond with ONLY valid JSON. Keys:
-        - title: short Estonian title (2–4 words)
-        - body: 2–4 short Estonian sentences about ONE everyday scene
-        - glossEnglish: natural English translation of the whole body
-        - focusWords: the required focus lemmas that appear in body (same forms or clear inflected forms)
+        - title: short Estonian title (1–3 words)
+        - body: ONE grammatically and logically correct Estonian sentence
+        - glossEnglish: natural English translation of that sentence
+        - focusWords: the required focus lemma that appears in body (same form or a clear inflection)
 
         Rules:
-        - Build a real miniature story (home, shop, school, morning, friend) that USES each focus lemma in context.
-        - Use EVERY focus lemma at least once in body — woven into sentences, never listed.
+        - Exactly ONE sentence in body (one terminal . ! or ?).
+        - Teach ONE focus word in a natural, useful everyday context — the sentence must make real sense.
+        - Use the focus lemma at least once — woven naturally, never listed or defined.
         - Prefer simple grammar at \(cefr.rawValue). You may use common glue words (\(knownGlueHint)).
-        - Keep body under 45 Estonian words.
+        - Aim for 8–16 Estonian words (not a 2–4 word stub). Give enough context to say aloud comfortably.
+        - Keep body under 20 Estonian words.
         - Do not wrap JSON in markdown fences.
-        - Never copy example wording; invent a new everyday scene.
-        - FORBIDDEN: vocabulary lists, "Ma ütlen: …", "Täna ma õpin uusi sõnu", "This is good practice", comma-separated word drills, or meta text about learning words.
+        - Never copy example wording; invent a new everyday sentence.
+        - FORBIDDEN: vocabulary lists, multi-sentence scenes, nonsense combinations, "Ma ütlen: …", "Täna ma õpin uusi sõnu", "This is good practice", or meta text about learning words.
 
         Example shape:
-        {"title":"Poes","body":"Täna ma lähen poodi. Ma ostan piima ja leiba.","glossEnglish":"Today I go to the store. I buy milk and bread.","focusWords":["lähen","ostan","piima"]}
+        {"title":"Poes","body":"Täna hommikul ma lähen poodi ja ostan värsket piima.","glossEnglish":"This morning I go to the store and buy fresh milk.","focusWords":["ostan"]}
         """
     }
 
     public var user: String {
         var lines: [String] = [
             "CEFR level: \(cefr.rawValue)",
-            "Write one short scene that naturally uses these focus lemma(s) in context:",
+            "Write one useful Estonian sentence (about 8–16 words) that naturally teaches this focus lemma:",
             focusLemmas.joined(separator: ", "),
         ]
         if !focusGlosses.isEmpty {
-            lines.append("English glosses for focus lemmas:")
+            lines.append("English gloss for the focus lemma:")
             for lemma in focusLemmas {
                 if let gloss = focusGlosses[lemma], !gloss.isEmpty {
                     lines.append("- \(lemma): \(gloss)")
                 }
             }
         }
-        lines.append("Return JSON only. Do not list the words — use them in sentences.")
+        lines.append("Return JSON only. Do not list the word — use it in one real sentence.")
         return lines.joined(separator: "\n")
     }
 }
@@ -80,6 +82,7 @@ public enum PassageGenerationParser {
         "short Estonian title",
         "3–5 short Estonian sentences",
         "2–4 short Estonian sentences",
+        "ONE grammatically",
         "natural English translation",
         "required focus lemmas",
         "never copy example",
@@ -107,15 +110,15 @@ public enum PassageGenerationParser {
         return makeText(from: draft, requiredFocus: requiredFocus, cefr: cefr)
     }
 
-    /// Offline fallback: a tiny everyday scene around 1–2 focus words (never a vocabulary list).
+    /// Offline fallback: one coherent sentence around a single focus word.
     public static func heuristic(
         requiredFocus: [String],
         cefr: CEFRLevel,
         glosses: [String: String] = [:]
     ) -> GradedText {
         LexiconCatalog.shared.loadBundledIfNeeded()
-        let words = Array((requiredFocus.isEmpty ? ["isa"] : requiredFocus).prefix(2))
-        let scene = buildScene(focus: words, glosses: glosses)
+        let words = Array((requiredFocus.isEmpty ? ["isa"] : requiredFocus).prefix(1))
+        let scene = buildSentence(focus: words, glosses: glosses)
         return GradedText(
             id: GradedText.makeGeneratedID(),
             title: scene.title,
@@ -126,123 +129,82 @@ public enum PassageGenerationParser {
         )
     }
 
-    private static func buildScene(
+    private static func buildSentence(
         focus: [String],
         glosses: [String: String]
     ) -> (title: String, body: String, gloss: String) {
-        let primary = focus[0]
-        let primaryEntry = LexiconCatalog.shared.entry(forSurface: primary)
-        let primaryGloss = cleanGloss(glosses[primary] ?? primary)
-        let primaryPOS = primaryEntry?.pos ?? ""
-
-        if focus.count >= 2 {
-            let secondary = focus[1]
-            let secondaryGloss = cleanGloss(glosses[secondary] ?? secondary)
-            let secondaryPOS = LexiconCatalog.shared.entry(forSurface: secondary)?.pos ?? ""
-            return twoWordScene(
-                a: primary, aGloss: primaryGloss, aPOS: primaryPOS,
-                b: secondary, bGloss: secondaryGloss, bPOS: secondaryPOS
-            )
-        }
-
-        return oneWordScene(word: primary, gloss: primaryGloss, pos: primaryPOS)
+        let word = focus[0]
+        let entry = LexiconCatalog.shared.entry(forSurface: word)
+        let gloss = cleanGloss(glosses[word] ?? word)
+        return oneWordSentence(word: word, gloss: gloss, pos: entry?.pos ?? "")
     }
 
-    private static func oneWordScene(
+    private static func oneWordSentence(
         word: String,
         gloss: String,
         pos: String
     ) -> (title: String, body: String, gloss: String) {
+        let key = EstonianTokenizer.normalize(word)
+        if let canned = cannedFunctionSentence(for: key, gloss: gloss) {
+            return canned
+        }
         switch primaryPOS(pos) {
         case .verb:
             return (
-                "Homme",
-                "Homme ma hakkan \(word). Siis ma tulen koju.",
-                "Tomorrow I start to \(gloss). Then I come home."
+                "Täna",
+                "Täna hommikul ma \(word) ja siis ma tulen koju.",
+                "This morning I \(gloss) and then I come home."
             )
         case .adjective:
             return (
                 "Hea päev",
-                "Täna on \(word) päev. Ma olen rõõmus.",
-                "Today is a \(gloss) day. I am happy."
+                "Täna on väga \(word) päev ja ma olen rõõmus.",
+                "Today is a very \(gloss) day and I am happy."
             )
         case .noun:
             return (
                 capitalize(word),
-                "Mul on \(word). \(capitalize(word)) on kodus.",
-                "I have \(gloss). \(capitalize(gloss)) is at home."
+                "Mul on \(word) kodus ja ma tahan seda kasutada.",
+                "I have \(gloss) at home and I want to use it."
             )
         case .other:
             return (
-                "Täna",
-                "Täna ma räägin sõbraga. \(capitalize(word)) on oluline.",
-                "Today I talk with a friend. \(capitalize(gloss)) is important."
+                capitalize(word),
+                "Täna ma räägin sõbraga ja \(word) on mulle oluline.",
+                "Today I talk with a friend and \(gloss) is important to me."
             )
         }
     }
 
-    private static func twoWordScene(
-        a: String, aGloss: String, aPOS: String,
-        b: String, bGloss: String, bPOS: String
-    ) -> (title: String, body: String, gloss: String) {
-        let aKind = primaryPOS(aPOS)
-        let bKind = primaryPOS(bPOS)
-
-        switch (aKind, bKind) {
-        case (.noun, .noun):
-            return (
-                "Kodus",
-                "Mul on \(a) ja \(b). Nad on kodus.",
-                "I have \(aGloss) and \(bGloss). They are at home."
-            )
-        case (.verb, .noun), (.verb, .other):
-            return (
-                "Täna",
-                "Täna ma hakkan \(a). Ma võtan \(b).",
-                "Today I start to \(aGloss). I take \(bGloss)."
-            )
-        case (.noun, .verb), (.other, .verb):
-            return (
-                capitalize(a),
-                "Mul on \(a). Ma hakkan \(b).",
-                "I have \(aGloss). I start to \(bGloss)."
-            )
-        case (.adjective, .noun), (.adjective, .other):
-            return (
-                "Hea asi",
-                "See \(b) on \(a). Ma tahan seda.",
-                "This \(bGloss) is \(aGloss). I want it."
-            )
-        case (.noun, .adjective), (.other, .adjective):
-            return (
-                capitalize(a),
-                "Mu \(a) on \(b). See on tore.",
-                "My \(aGloss) is \(bGloss). That is nice."
-            )
-        case (.verb, .verb):
-            return (
-                "Homme",
-                "Homme ma hakkan \(a). Pärast ma hakkan \(b).",
-                "Tomorrow I start to \(aGloss). Later I start to \(bGloss)."
-            )
-        case (.adjective, .verb):
-            return (
-                "Hea plaan",
-                "See plaan on \(a). Ma hakkan \(b).",
-                "This plan is \(aGloss). I start to \(bGloss)."
-            )
-        case (.verb, .adjective):
-            return (
-                "Täna",
-                "Täna ma hakkan \(a). See on \(b).",
-                "Today I start to \(aGloss). That is \(bGloss)."
-            )
+    /// Natural everyday frames for high-frequency function words (offline fallback).
+    private static func cannedFunctionSentence(
+        for lemma: String,
+        gloss: String
+    ) -> (title: String, body: String, gloss: String)? {
+        switch lemma {
+        case "kes":
+            return ("Kes", "Kes see mees seal ukse juures on?", "Who is that man there by the door?")
+        case "kuidas":
+            return ("Kuidas", "Kuidas sa täna hommikul end tunned?", "How do you feel this morning?")
+        case "ka":
+            return ("Ka", "Ma tahan ka teed ja natuke leiba.", "I want tea too and a little bread.")
+        case "mitte":
+            return ("Mitte", "See ei ole mitte halb mõte täna.", "That is not a bad idea today.")
+        case "välja":
+            return ("Välja", "Pärast tööd ma lähen välja sõbraga.", "After work I go out with a friend.")
+        case "tema":
+            return ("Tema", "Tema on täna kodus ja loeb raamatut.", "He/she is at home today and reads a book.")
+        case "ära":
+            return ("Ära", "Palun ära mine veel ära, jää siia.", "Please don't go away yet, stay here.")
+        case "kõik":
+            return ("Kõik", "Kõik on täna hästi ja ma olen rahul.", "Everything is fine today and I am content.")
+        case "ema":
+            return ("Ema", "Mul on ema kodus ja ta teeb täna süüa.", "I have a mother at home and she cooks today.")
+        case "isa":
+            return ("Isa", "Mul on isa kodus ja ta loeb ajalehte.", "I have a father at home and he reads the newspaper.")
         default:
-            return (
-                "Kodus",
-                "Ma räägin \(a)st. Siis ma näen \(b).",
-                "I talk about \(aGloss). Then I see \(bGloss)."
-            )
+            _ = gloss
+            return nil
         }
     }
 
@@ -290,15 +252,31 @@ public enum PassageGenerationParser {
         return nil
     }
 
+    private static let nonPossessableFocus: Set<String> = [
+        "kes", "kuidas", "ka", "mitte", "ära", "kõik", "välja", "tema",
+        "mis", "kas", "kui", "et", "aga", "oma", "siis", "nii", "ja", "ei",
+    ]
+
     private static func isUsable(_ draft: PassageDraft, requiredFocus: [String]) -> Bool {
         let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = draft.body.trimmingCharacters(in: .whitespacesAndNewlines)
         let gloss = draft.glossEnglish.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard title.count >= 2, body.count >= 12, gloss.count >= 8 else { return false }
+        guard title.count >= 2, body.count >= 8, gloss.count >= 6 else { return false }
         if looksLikePlaceholder(title) || looksLikePlaceholder(body) || looksLikePlaceholder(gloss) {
             return false
         }
         if looksLikeMetaWordList(body) || looksLikeMetaWordList(gloss) {
+            return false
+        }
+        if sentenceCount(in: body) > 1 {
+            return false
+        }
+        let wordCount = EstonianTokenizer.tokenize(body).filter(\.isWord).count
+        // Prefer speakable sentences; reject tiny stubs like "Mul on ema."
+        if wordCount < 6 || wordCount > 20 {
+            return false
+        }
+        if looksLikeNonsensePossession(body: body, gloss: gloss, requiredFocus: requiredFocus) {
             return false
         }
         let bodyLemmas = Set(EstonianTokenizer.wordLemmas(in: body))
@@ -308,9 +286,39 @@ public enum PassageGenerationParser {
                 || bodyLemmas.contains(where: { $0.hasPrefix(key) || key.hasPrefix($0) })
                 || body.lowercased().contains(focus.lowercased())
         }
-        // Require at least half of the focus set (models often drop 1–2).
-        let need = max(1, (requiredFocus.count + 1) / 2)
+        // Require the focus word for single-word practice.
+        let need = max(1, requiredFocus.count)
         return hits.count >= need
+    }
+
+    /// Catch frames like "Mul on kes" / "I have who" that are grammatical-ish but useless.
+    private static func looksLikeNonsensePossession(
+        body: String,
+        gloss: String,
+        requiredFocus: [String]
+    ) -> Bool {
+        let focusKeys = requiredFocus.map { EstonianTokenizer.normalize($0) }
+        let focusIsFunction = focusKeys.contains(where: { nonPossessableFocus.contains($0) })
+        guard focusIsFunction else { return false }
+
+        let bodyLower = body.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if bodyLower.hasPrefix("mul on ") || bodyLower.hasPrefix("mul on") {
+            return true
+        }
+        let glossLower = gloss.lowercased()
+        if glossLower.hasPrefix("i have ") || glossLower.contains("i have who")
+            || glossLower.contains("i have how") || glossLower.contains("i have also") {
+            return true
+        }
+        return false
+    }
+
+    private static func sentenceCount(in body: String) -> Int {
+        let parts = body
+            .split { ".!?".contains($0) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return max(parts.count, body.isEmpty ? 0 : 1)
     }
 
     private static func makeText(

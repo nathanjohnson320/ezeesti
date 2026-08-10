@@ -15,23 +15,24 @@ public struct SpokenSummaryPrompt {
     public var system: String {
         """
         You are a patient Estonian speaking tutor for CEFR \(text.cefr.rawValue) learners.
-        The learner spoke a short summary of a reading text. Grade from the ASR transcript.
+        The learner read a target sentence aloud. Grade from the ASR transcript.
         Always respond with ONLY valid JSON. Keys and meaning:
         - verdict: "correct" | "close" | "incorrect"
-        - correction: a clear spoken Estonian model answer (usually close to the source text) that includes every required word — never echo a garbled transcript
-        - explanation: short English tip naming specific wrong/misheard words when possible (e.g. "You said 'üksi sünni' — try 'uusi sõnu'")
+        - correction: the clear target Estonian sentence (or a minor natural fix) — never echo a garbled transcript
+        - explanation: 1–3 English sentences that (1) quote what they said wrong, (2) say the intended word/phrase, and (3) briefly explain why it is wrong (pronunciation, wrong word, meaning change, or words blurred together). Do NOT only say "try X".
         - retryPrompt: brief next instruction for the learner
-        - usedRequiredWords: required words that appear in the transcript
-        - missingRequiredWords: required words that do not appear
+        - usedRequiredWords: focus words that appear in the transcript
+        - missingRequiredWords: focus words that do not appear
 
         Grading rules:
-        - Required words must appear (allow light inflection).
-        - Also compare meaning to the source text. If content words are wrong, swapped, or sound like ASR mishears of the source, verdict is close or incorrect — even if required words are present.
-        - verdict=correct only when required words are used AND the summary clearly matches the source meaning.
+        - Compare the transcript to the target sentence word-by-word.
+        - Focus/required words must appear (allow light inflection).
+        - If content words are wrong, swapped, or sound like ASR mishears, verdict is close or incorrect — even if required words are present.
+        - verdict=correct only when the reading clearly matches the target sentence.
         - Be lenient with punctuation and filler; do not ignore wrong content words.
 
         Example shape (replace every string with content for THIS learner; never copy example wording):
-        {"verdict":"close","correction":"Täna ma õpin uusi sõnu.","explanation":"You said 'üksi sünni' — try 'uusi sõnu'.","retryPrompt":"Say the summary again more clearly.","usedRequiredWords":["et","kui"],"missingRequiredWords":[]}
+        {"verdict":"close","correction":"See mees on väga tark.","explanation":"You said “me som” where the sentence has “mees on”. Those words blurred together, so it no longer means “this man is”. Say “mees” then “on” clearly.","retryPrompt":"Read the sentence again more clearly.","usedRequiredWords":["mees"],"missingRequiredWords":[]}
 
         Do not wrap JSON in markdown fences.
         """
@@ -39,13 +40,13 @@ public struct SpokenSummaryPrompt {
 
     public var user: String {
         """
-        Source text:
+        Target sentence:
         \(text.body)
 
         English gloss:
         \(text.glossEnglish)
 
-        Required words the learner must use:
+        Focus words to cover:
         \(mustUseWords.joined(separator: ", "))
 
         Learner said (ASR transcript):
@@ -93,6 +94,7 @@ public enum SpokenSummaryFeedbackParser {
     private static let placeholderFragments: [String] = [
         "one short English tip",
         "a good spoken Estonian summary using the required words",
+        "the clear target Estonian sentence",
         "what to say next",
         "one short teacher explanation",
         "corrected Estonian sentence",
@@ -135,44 +137,37 @@ public enum SpokenSummaryFeedbackParser {
         transcript: String,
         sourceBody: String = ""
     ) -> SpokenSummaryFeedback {
-        let said = Set(EstonianTokenizer.wordLemmas(in: transcript))
-        var used: [String] = []
-        var missing: [String] = []
-        for word in mustUse {
-            let key = EstonianTokenizer.normalize(word)
-            if said.contains(key) || said.contains(where: { $0.hasPrefix(key) || key.hasPrefix($0) }) {
-                used.append(word)
-            } else {
-                missing.append(word)
-            }
-        }
-
+        let mismatches = likelyMismatches(sourceBody: sourceBody, transcript: transcript)
+        let coverage = requiredCoverage(mustUse: mustUse, transcript: transcript, mismatches: mismatches)
         let modelAnswer = sourceBody.isEmpty
             ? "Proovi öelda midagi nende sõnadega: \(mustUse.joined(separator: ", "))."
             : sourceBody
 
-        let mismatches = likelyMismatches(sourceBody: sourceBody, transcript: transcript)
         let fidelity = contentFidelity(sourceBody: sourceBody, transcript: transcript)
-        let explanation = buildExplanation(missingRequired: missing, mismatches: mismatches, fidelity: fidelity)
+        let explanation = buildExplanation(
+            missingRequired: coverage.missing,
+            mismatches: mismatches,
+            fidelity: fidelity
+        )
 
-        if !missing.isEmpty {
+        if !coverage.missing.isEmpty {
             return SpokenSummaryFeedback(
                 verdict: .close,
                 correction: modelAnswer,
                 explanation: explanation,
-                retryPrompt: "Speak again and use: \(missing.joined(separator: ", "))",
-                usedRequiredWords: used,
-                missingRequiredWords: missing
+                retryPrompt: "Read again and include: \(coverage.missing.joined(separator: ", "))",
+                usedRequiredWords: coverage.used,
+                missingRequiredWords: coverage.missing
             )
         }
 
-        if !sourceBody.isEmpty, fidelity < 0.55 || !mismatches.isEmpty {
+        if !sourceBody.isEmpty, fidelity < 0.7 || !mismatches.isEmpty {
             return SpokenSummaryFeedback(
                 verdict: .close,
                 correction: modelAnswer,
                 explanation: explanation,
-                retryPrompt: "Say the summary again, closer to the reading text.",
-                usedRequiredWords: used,
+                retryPrompt: "Read the sentence again, closer to the target.",
+                usedRequiredWords: coverage.used,
                 missingRequiredWords: []
             )
         }
@@ -181,8 +176,8 @@ public enum SpokenSummaryFeedbackParser {
             verdict: .correct,
             correction: modelAnswer,
             explanation: explanation,
-            retryPrompt: "Ready for the next text.",
-            usedRequiredWords: used,
+            retryPrompt: "Ready for the next sentence.",
+            usedRequiredWords: coverage.used,
             missingRequiredWords: []
         )
     }
@@ -197,33 +192,28 @@ public enum SpokenSummaryFeedbackParser {
         var verdict = feedback.verdict
         var explanation = feedback.explanation
         var correction = feedback.correction
-        var missing = feedback.missingRequiredWords
-        var used = feedback.usedRequiredWords
 
-        // Recompute required-word coverage if the model left lists empty/wrong.
-        if used.isEmpty && missing.isEmpty && !mustUse.isEmpty {
-            let said = Set(EstonianTokenizer.wordLemmas(in: transcript))
-            for word in mustUse {
-                let key = EstonianTokenizer.normalize(word)
-                if said.contains(key) || said.contains(where: { $0.hasPrefix(key) || key.hasPrefix($0) }) {
-                    used.append(word)
-                } else {
-                    missing.append(word)
-                }
-            }
-        }
+        // Always recompute coverage from the transcript — models invent missing words
+        // (e.g. claiming "väga" is missing when it was said clearly).
+        let mismatches = likelyMismatches(sourceBody: sourceBody, transcript: transcript)
+        let coverage = requiredCoverage(mustUse: mustUse, transcript: transcript, mismatches: mismatches)
+        let used = coverage.used
+        let missing = coverage.missing
 
         let fidelity = contentFidelity(sourceBody: sourceBody, transcript: transcript)
-        let mismatches = likelyMismatches(sourceBody: sourceBody, transcript: transcript)
 
         if !missing.isEmpty, verdict == .correct {
             verdict = .close
         }
-        if verdict == .correct, !sourceBody.isEmpty, (fidelity < 0.55 || !mismatches.isEmpty) {
+        if verdict == .correct, !sourceBody.isEmpty, (fidelity < 0.7 || !mismatches.isEmpty) {
             verdict = .close
         }
+        // Upgrade false "close" when coverage + alignment are actually fine.
+        if verdict != .incorrect, missing.isEmpty, mismatches.isEmpty, fidelity >= 0.7 {
+            verdict = .correct
+        }
 
-        // Prefer concrete word-level tips over vague LLM praise when we can detect issues.
+        // Prefer concrete pronunciation tips over vague LLM praise.
         if !mismatches.isEmpty || !missing.isEmpty {
             explanation = buildExplanation(
                 missingRequired: missing,
@@ -257,14 +247,51 @@ public enum SpokenSummaryFeedbackParser {
             correction = sourceBody.isEmpty ? correction : sourceBody
         }
 
+        let retry: String
+        if !missing.isEmpty {
+            retry = "Read again and include: \(missing.joined(separator: ", "))"
+        } else if !mismatches.isEmpty {
+            retry = "Read the sentence again, closer to the target."
+        } else {
+            retry = feedback.retryPrompt
+        }
+
         return SpokenSummaryFeedback(
             verdict: verdict,
             correction: correction,
             explanation: explanation,
-            retryPrompt: feedback.retryPrompt,
+            retryPrompt: retry,
             usedRequiredWords: used,
             missingRequiredWords: missing
         )
+    }
+
+    /// Classify focus/required words as used, near-miss (misheard), or truly missing.
+    public static func requiredCoverage(
+        mustUse: [String],
+        transcript: String,
+        mismatches: [String] = []
+    ) -> (used: [String], missing: [String]) {
+        let said = EstonianTokenizer.wordLemmas(in: transcript)
+        let saidSet = Set(said)
+        let nearMissExpected = expectedWordsCoveredByMismatches(mismatches)
+
+        var used: [String] = []
+        var missing: [String] = []
+        for word in mustUse {
+            let key = EstonianTokenizer.normalize(word)
+            if saidSet.contains(key) || saidSet.contains(where: { fuzzyMatch($0, key) }) {
+                used.append(word)
+                continue
+            }
+            // Said something close (e.g. lakk ≈ lahke) — tip already covers it; not "missing".
+            if nearMissExpected.contains(key)
+                || said.contains(where: { isNearMiss($0, key) }) {
+                continue
+            }
+            missing.append(word)
+        }
+        return (used, missing)
     }
 
     /// Share of source content lemmas that appear (exact or prefix) in the transcript.
@@ -274,15 +301,20 @@ public enum SpokenSummaryFeedbackParser {
         let said = Set(EstonianTokenizer.wordLemmas(in: transcript))
         var hit = 0
         for lemma in source {
-            if said.contains(lemma) || said.contains(where: { fuzzyMatch($0, lemma) }) {
+            if said.contains(lemma) || said.contains(where: { fuzzyMatch($0, lemma) || isNearMiss($0, lemma) }) {
                 hit += 1
             }
         }
         return Double(hit) / Double(source.count)
     }
 
-    /// Word-level “you said X — try Y” tips via sequence alignment (catches substitutions like ütlen→õpin).
+    /// Word-level coaching tips via sequence alignment (catches lakk→lahke, me som→mees on).
     public static func likelyMismatches(sourceBody: String, transcript: String) -> [String] {
+        diagnose(sourceBody: sourceBody, transcript: transcript).map(\.explanation)
+    }
+
+    /// Structured word issues used for coverage + explanations.
+    public static func diagnose(sourceBody: String, transcript: String) -> [WordIssue] {
         let sourceTokens = EstonianTokenizer.tokenize(sourceBody).filter(\.isWord)
         let saidTokens = EstonianTokenizer.tokenize(transcript).filter(\.isWord)
         guard !sourceTokens.isEmpty, !saidTokens.isEmpty else { return [] }
@@ -291,20 +323,105 @@ public enum SpokenSummaryFeedbackParser {
         let saidNorm = saidTokens.map(\.normalized)
         let ops = wordEditScript(source: sourceNorm, said: saidNorm)
 
-        var hints: [String] = []
+        var pairs: [(heard: String, expected: String, heardNorm: String, expectedNorm: String)] = []
         var seenExpected = Set<String>()
         for op in ops {
             guard case let .substitute(saidIndex, sourceIndex) = op else { continue }
             let expected = sourceNorm[sourceIndex]
-            if contentIgnore.contains(expected) || expected.count < 3 { continue }
+            let heard = saidNorm[saidIndex]
+            if expected.count < 2 { continue }
+            // Skip tiny glue only when it was essentially correct.
+            if contentIgnore.contains(expected), isNearMiss(heard, expected) {
+                continue
+            }
             if seenExpected.contains(expected) { continue }
             seenExpected.insert(expected)
-            let expectedSurface = sourceTokens[sourceIndex].surface
-            let heardSurface = saidTokens[saidIndex].surface
-            hints.append("you said “\(heardSurface)” — try “\(expectedSurface)”")
-            if hints.count >= 4 { break }
+            pairs.append((
+                heard: saidTokens[saidIndex].surface,
+                expected: sourceTokens[sourceIndex].surface,
+                heardNorm: heard,
+                expectedNorm: expected
+            ))
+            if pairs.count >= 5 { break }
         }
-        return hints
+
+        return coalesceIssues(pairs)
+    }
+
+    public struct WordIssue: Equatable, Sendable {
+        public let heard: String
+        public let expected: String
+        public let explanation: String
+
+        public init(heard: String, expected: String, explanation: String) {
+            self.heard = heard
+            self.expected = expected
+            self.explanation = explanation
+        }
+    }
+
+    private static func coalesceIssues(
+        _ pairs: [(heard: String, expected: String, heardNorm: String, expectedNorm: String)]
+    ) -> [WordIssue] {
+        guard !pairs.isEmpty else { return [] }
+        var issues: [WordIssue] = []
+        var i = 0
+        while i < pairs.count {
+            // Merge adjacent substitutions into one phrase tip (me+som vs mees+on).
+            if i + 1 < pairs.count {
+                let a = pairs[i]
+                let b = pairs[i + 1]
+                let heardPhrase = "\(a.heard) \(b.heard)"
+                let expectedPhrase = "\(a.expected) \(b.expected)"
+                let blurred = looksBlurredTogether(heard: a.heardNorm + b.heardNorm, expected: a.expectedNorm + b.expectedNorm)
+                    || looksBlurredTogether(heard: a.heardNorm, expected: a.expectedNorm)
+                if blurred || (a.heardNorm.count <= 3 && b.heardNorm.count <= 3) {
+                    issues.append(
+                        WordIssue(
+                            heard: heardPhrase,
+                            expected: expectedPhrase,
+                            explanation: phraseExplanation(heard: heardPhrase, expected: expectedPhrase)
+                        )
+                    )
+                    i += 2
+                    continue
+                }
+            }
+            let pair = pairs[i]
+            issues.append(
+                WordIssue(
+                    heard: pair.heard,
+                    expected: pair.expected,
+                    explanation: wordExplanation(heard: pair.heard, expected: pair.expected, heardNorm: pair.heardNorm, expectedNorm: pair.expectedNorm)
+                )
+            )
+            i += 1
+        }
+        return Array(issues.prefix(3))
+    }
+
+    private static func wordExplanation(
+        heard: String,
+        expected: String,
+        heardNorm: String,
+        expectedNorm: String
+    ) -> String {
+        if isNearMiss(heardNorm, expectedNorm) {
+            return "You said “\(heard)”, but it should be “\(expected)”. That is close — the sounds are slightly off, so listen for the full word “\(expected)”."
+        }
+        if heardNorm.count + 1 < expectedNorm.count {
+            return "You said “\(heard)”, but the sentence needs “\(expected)”. It sounded cut short; pronounce the whole word “\(expected)”."
+        }
+        return "You said “\(heard)”, but the sentence needs “\(expected)”. That is a different word, so the meaning changes — aim for “\(expected)” here."
+    }
+
+    private static func phraseExplanation(heard: String, expected: String) -> String {
+        "You said “\(heard)” where the sentence has “\(expected)”. Those words blurred together or split oddly, so the meaning is unclear. Say “\(expected)” as separate clear words."
+    }
+
+    private static func looksBlurredTogether(heard: String, expected: String) -> Bool {
+        guard heard.count >= 3, expected.count >= 3 else { return false }
+        return levenshtein(heard, expected) <= max(2, expected.count / 3)
     }
 
     private static func buildExplanation(
@@ -314,21 +431,75 @@ public enum SpokenSummaryFeedbackParser {
     ) -> String {
         var parts: [String] = []
         if !mismatches.isEmpty {
-            parts.append(mismatches.prefix(3).joined(separator: "; "))
+            parts.append(contentsOf: mismatches.prefix(2))
         }
         if !missingRequired.isEmpty {
-            parts.append("also include: \(missingRequired.joined(separator: ", "))")
+            let list = missingRequired.joined(separator: ", ")
+            parts.append("Also, “\(list)” did not come through clearly — include \(missingRequired.count == 1 ? "that word" : "those words") when you read.")
         }
         if parts.isEmpty {
-            if fidelity < 0.55 {
-                return "Required words are there, but the summary does not match the text well. Hear the model and try again."
+            if fidelity < 0.7 {
+                return "Several words did not match the target sentence. Hear the model, then read it again more slowly."
             }
-            return "You used the new words. Nice speaking!"
+            return "Clear reading — nice work!"
         }
-        // Capitalize first letter for display.
-        let joined = parts.joined(separator: ". ")
-        guard let first = joined.first else { return joined }
-        return String(first).uppercased() + joined.dropFirst() + "."
+        return parts.joined(separator: " ")
+    }
+
+    /// Expected surfaces already explained by a substitution tip (normalized).
+    private static func expectedWordsCoveredByMismatches(_ mismatches: [String]) -> Set<String> {
+        var set = Set<String>()
+        for tip in mismatches {
+            // Prefer explicit “needs “X”” / “has “X”” / “for “X”” / “try “X””.
+            for marker in ["needs “", "has “", " for “", " — try “", "word “"] {
+                var search = tip[...]
+                while let range = search.range(of: marker) {
+                    let after = search[range.upperBound...]
+                    if let end = after.firstIndex(of: "”") {
+                        let word = String(after[..<end])
+                        for part in word.split(separator: " ") {
+                            set.insert(EstonianTokenizer.normalize(String(part)))
+                        }
+                        search = after[end...]
+                    } else {
+                        break
+                    }
+                }
+            }
+        }
+        return set
+    }
+
+    /// True when heard ≈ expected (ASR near-miss / slight mispronunciation).
+    private static func isNearMiss(_ heard: String, _ expected: String) -> Bool {
+        if heard == expected { return true }
+        if fuzzyMatch(heard, expected) { return true }
+        let a = heard
+        let b = expected
+        guard a.count >= 3, b.count >= 3 else { return false }
+        let distance = levenshtein(a, b)
+        let limit = max(1, min(2, max(a.count, b.count) / 3))
+        return distance <= limit
+    }
+
+    private static func levenshtein(_ a: String, _ b: String) -> Int {
+        let aChars = Array(a)
+        let bChars = Array(b)
+        let n = aChars.count
+        let m = bChars.count
+        if n == 0 { return m }
+        if m == 0 { return n }
+        var prev = Array(0...m)
+        var cur = Array(repeating: 0, count: m + 1)
+        for i in 1...n {
+            cur[0] = i
+            for j in 1...m {
+                let cost = aChars[i - 1] == bChars[j - 1] ? 0 : 1
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            prev = cur
+        }
+        return prev[m]
     }
 
     private enum WordEdit {
@@ -382,6 +553,8 @@ public enum SpokenSummaryFeedbackParser {
 
     private static func wordsMatch(_ a: String, _ b: String) -> Bool {
         if a == b { return true }
+        // Avoid treating short stems as equal ("me"≈"mees") — that hides real misreads.
+        if min(a.count, b.count) < 3 { return false }
         return fuzzyMatch(a, b)
     }
 

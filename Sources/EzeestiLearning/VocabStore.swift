@@ -114,16 +114,15 @@ public final class VocabCard {
         self.contextSentence = contextSentence
         self.glossEnglish = glossEnglish
         self.familiarityRaw = familiarity.rawValue
-        let card = FSRSCard.newCard()
-        self.stability = card.stability
-        self.difficulty = card.difficulty
-        self.elapsedDays = card.elapsedDays
-        self.scheduledDays = card.scheduledDays
-        self.reps = card.reps
-        self.lapses = card.lapses
-        self.stateRaw = card.state.rawValue
-        self.due = card.due
-        self.lastReview = card.lastReview
+        self.stability = 0
+        self.difficulty = 0
+        self.elapsedDays = 0
+        self.scheduledDays = ExponentialBackoff.initialIntervalDays
+        self.reps = 0
+        self.lapses = 0
+        self.stateRaw = 0
+        self.due = Date()
+        self.lastReview = nil
         self.createdAt = Date()
         self.updatedAt = Date()
     }
@@ -132,7 +131,6 @@ public final class VocabCard {
 @MainActor
 public final class VocabStore: ObservableObject {
     public let modelContext: ModelContext
-    private let scheduler = FSRSScheduler()
 
     public init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -218,6 +216,14 @@ public final class VocabStore: ObservableObject {
         try modelContext.fetch(FetchDescriptor<VocabCard>(sortBy: [SortDescriptor(\.lemma)]))
     }
 
+    /// Delete all learner vocab cards (known/learning/due). Lexicon and gloss cache stay.
+    public func resetProgress() throws {
+        for card in try fetchAll() {
+            modelContext.delete(card)
+        }
+        try modelContext.save()
+    }
+
     public func knownLemmas() throws -> Set<String> {
         Set(try fetchAll().filter { $0.familiarity == .known }.map(\.lemma))
     }
@@ -259,7 +265,7 @@ public final class VocabStore: ObservableObject {
             modelContext.insert(CachedGloss(lemma: lemma, glossEnglish: gloss, source: source))
         }
 
-        // Keep FSRS cards in sync when the learner already flagged this word.
+        // Keep cards in sync when the learner already flagged this word.
         if let card = try card(forSurface: surface), card.glossEnglish.isEmpty {
             card.glossEnglish = gloss
             card.updatedAt = Date()
@@ -290,10 +296,7 @@ public final class VocabStore: ObservableObject {
     }
 
     public func dueCards(now: Date = Date(), limit: Int = 20) throws -> [VocabCard] {
-        let due = try fetchAll().filter { card in
-            if card.familiarity == .known { return false }
-            return card.due <= now
-        }
+        let due = try fetchAll().filter { $0.due <= now }
         return Array(due.sorted { $0.due < $1.due }.prefix(limit))
     }
 
@@ -312,13 +315,12 @@ public final class VocabStore: ObservableObject {
             existing.surfaceForm = surface
             existing.contextSentence = contextSentence
             existing.familiarity = .learning
-            var fsrs = existing.fsrsCard
-            if fsrs.state == .review && existing.reps == 0 {
-                fsrs = FSRSCard.newCard()
-            }
-            fsrs.due = Date()
-            existing.fsrsCard = fsrs
+            existing.scheduledDays = ExponentialBackoff.initialIntervalDays
+            existing.due = Date()
             existing.updatedAt = Date()
+            if !glossEnglish.isEmpty, existing.glossEnglish.isEmpty {
+                existing.glossEnglish = glossEnglish
+            }
             try modelContext.save()
             return existing
         }
@@ -335,46 +337,16 @@ public final class VocabStore: ObservableObject {
         return card
     }
 
-    public func applyRating(_ card: VocabCard, rating: FSRSRating, now: Date = Date()) throws {
-        let next = scheduler.review(card.fsrsCard, rating: rating, now: now)
-        card.fsrsCard = next
-        switch rating {
-        case .again, .hard:
-            card.familiarity = .learning
-        case .good, .easy:
-            if next.state == .review && next.scheduledDays >= 21 {
-                card.familiarity = .known
-            } else {
-                card.familiarity = .learning
+    /// Correct read-aloud of an unflagged word: mark known and schedule exponential review.
+    public func markKnownWithBackoff(_ lemmas: [String], now: Date = Date()) throws {
+        let all = try fetchAll()
+        for lemma in lemmas {
+            let key = EstonianTokenizer.normalize(lemma)
+            if let existing = all.first(where: { $0.lemma == key }), existing.familiarity == .known {
+                try recordReviewSuccess(existing, now: now)
+                continue
             }
-        }
-        try modelContext.save()
-    }
 
-    public func markProducedSuccessfully(_ lemmas: [String]) throws {
-        let all = try fetchAll()
-        for lemma in lemmas {
-            let key = EstonianTokenizer.normalize(lemma)
-            guard let card = all.first(where: { $0.lemma == key }) else { continue }
-            try applyRating(card, rating: .good)
-        }
-    }
-
-    public func markProducedWeakly(_ lemmas: [String]) throws {
-        let all = try fetchAll()
-        for lemma in lemmas {
-            let key = EstonianTokenizer.normalize(lemma)
-            guard let card = all.first(where: { $0.lemma == key }) else { continue }
-            try applyRating(card, rating: .again)
-        }
-    }
-
-    /// Perfect spoken summary: mark required lemmas known immediately so they are never retargeted.
-    public func markKnownImmediate(_ lemmas: [String], now: Date = Date()) throws {
-        let all = try fetchAll()
-        let farDue = now.addingTimeInterval(365 * 86_400)
-        for lemma in lemmas {
-            let key = EstonianTokenizer.normalize(lemma)
             let card: VocabCard
             if let existing = all.first(where: { $0.lemma == key }) {
                 card = existing
@@ -387,15 +359,59 @@ public final class VocabStore: ObservableObject {
                 modelContext.insert(card)
             }
             card.familiarity = .known
-            var fsrs = card.fsrsCard
-            fsrs.state = .review
-            fsrs.scheduledDays = 365
-            fsrs.due = farDue
-            fsrs.lastReview = now
-            if fsrs.reps == 0 { fsrs.reps = 1 }
-            card.fsrsCard = fsrs
+            card.scheduledDays = ExponentialBackoff.initialIntervalDays
+            card.due = ExponentialBackoff.dueDate(from: now, intervalDays: card.scheduledDays)
+            card.lastReview = now
+            card.reps = max(card.reps, 1)
             card.updatedAt = now
         }
+        try modelContext.save()
+    }
+
+    /// Flagged or incorrect: keep learning and make due immediately.
+    public func markLearningDueSoon(_ lemmas: [String], now: Date = Date()) throws {
+        let all = try fetchAll()
+        for lemma in lemmas {
+            let key = EstonianTokenizer.normalize(lemma)
+            let card: VocabCard
+            if let existing = all.first(where: { $0.lemma == key }) {
+                card = existing
+            } else {
+                card = VocabCard(
+                    lemma: key,
+                    surfaceForm: lemma,
+                    familiarity: .learning
+                )
+                modelContext.insert(card)
+            }
+            card.familiarity = .learning
+            card.scheduledDays = ExponentialBackoff.initialIntervalDays
+            card.due = now
+            card.lapses += 1
+            card.lastReview = now
+            card.updatedAt = now
+        }
+        try modelContext.save()
+    }
+
+    public func recordReviewSuccess(_ card: VocabCard, now: Date = Date()) throws {
+        let next = ExponentialBackoff.nextSuccessInterval(currentDays: card.scheduledDays)
+        card.familiarity = .known
+        card.scheduledDays = next
+        card.due = ExponentialBackoff.dueDate(from: now, intervalDays: next)
+        card.reps += 1
+        card.lastReview = now
+        card.updatedAt = now
+        try modelContext.save()
+    }
+
+    public func recordReviewFailure(_ card: VocabCard, now: Date = Date()) throws {
+        card.familiarity = .learning
+        card.scheduledDays = ExponentialBackoff.initialIntervalDays
+        card.due = now
+        card.lapses += 1
+        card.lastReview = now
+        card.updatedAt = now
         try modelContext.save()
     }
 }

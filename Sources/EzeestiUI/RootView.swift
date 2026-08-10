@@ -47,6 +47,7 @@ final class LearningHolder: ObservableObject {
 
 public struct LearningSessionView: View {
     @ObservedObject var learning: LearningEngine
+    @State private var confirmReset = false
 
     public var body: some View {
         NavigationSplitView {
@@ -60,6 +61,12 @@ public struct LearningSessionView: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
+
+                    Button(role: .destructive) {
+                        confirmReset = true
+                    } label: {
+                        Label("Reset progress", systemImage: "arrow.counterclockwise")
+                    }
                 }
 
                 Section("Needs review") {
@@ -68,13 +75,13 @@ public struct LearningSessionView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         Button {
-                            learning.startFSRSReview()
+                            learning.startDueReview()
                         } label: {
                             Label("Review \(learning.dueCount) word\(learning.dueCount == 1 ? "" : "s")", systemImage: "mic.fill")
                         }
                         ForEach(learning.duePreview, id: \.lemma) { card in
                             Button {
-                                learning.startFSRSReview(preferringLemma: card.lemma)
+                                learning.startDueReview(preferringLemma: card.lemma)
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(card.surfaceForm).font(.headline)
@@ -89,17 +96,17 @@ public struct LearningSessionView: View {
                     }
                 }
 
-                Section("Reading") {
+                Section("Practice") {
                     if let text = learning.selectedText, let report = learning.familiarity {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(text.title).font(.headline)
-                                Text("\(text.cefr.rawValue) · ~\(report.percentKnown)% known in text")
+                                Text("\(text.cefr.rawValue) · ~\(report.percentKnown)% known in sentence")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
-                            Image(systemName: "text.book.closed.fill")
+                            Image(systemName: "text.bubble.fill")
                         }
                     }
                     if learning.isGeneratingPassage {
@@ -107,13 +114,13 @@ public struct LearningSessionView: View {
                             ProgressView()
                                 .controlSize(.small)
                             Text(learning.generationDetail.isEmpty
-                                 ? "Writing next text from leftover words…"
+                                 ? "Writing next sentence…"
                                  : learning.generationDetail)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     } else {
-                        Button("New text") {
+                        Button("New sentence") {
                             learning.continueRecommendedReading()
                         }
                     }
@@ -121,29 +128,37 @@ public struct LearningSessionView: View {
             }
             .navigationTitle("ezeesti")
             .frame(minWidth: 260)
+            .confirmationDialog(
+                "Reset all progress?",
+                isPresented: $confirmReset,
+                titleVisibility: .visible
+            ) {
+                Button("Reset progress", role: .destructive) {
+                    learning.resetProgress()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This clears known and learning words and starts again from zero. This cannot be undone.")
+            }
         } detail: {
             switch learning.phase {
-            case .reviewing, .recordingReview:
-                ReviewDetailView(learning: learning)
             case .generatingPassage:
                 ContentUnavailableView {
-                    Label("Writing your next text", systemImage: "text.badge.plus")
+                    Label("Writing your next sentence", systemImage: "text.badge.plus")
                 } description: {
                     Text(learning.generationDetail.isEmpty
-                         ? "Drafting a short passage from the next words at your level."
+                         ? "Drafting and checking one short sentence around the next word."
                          : learning.generationDetail)
                 }
-            case .reading:
+            case .reading, .speakingSummary, .recordingSummary, .transcribing, .grading, .summaryFeedback, .completed:
                 ReadingDetailView(learning: learning)
-            case .speakingSummary, .recordingSummary, .transcribing, .grading, .summaryFeedback, .completed:
-                SummaryDetailView(learning: learning)
             case .error(let message):
                 ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(message))
             default:
                 ContentUnavailableView(
                     "Read → look up → speak",
-                    systemImage: "text.book.closed",
-                    description: Text("Tap a word for its meaning. Flag ones you need help with, then speak a summary.")
+                    systemImage: "text.bubble",
+                    description: Text("Tap a word for its meaning. Flag ones you need help with, then read the sentence aloud.")
                 )
             }
         }
@@ -172,6 +187,15 @@ private struct WarmupView: View {
 private struct ReadingDetailView: View {
     @ObservedObject var learning: LearningEngine
 
+    private var isPracticeActive: Bool {
+        switch learning.phase {
+        case .speakingSummary, .recordingSummary, .transcribing, .grading, .summaryFeedback, .completed:
+            return true
+        default:
+            return false
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
@@ -187,52 +211,56 @@ private struct ReadingDetailView: View {
                         }
                         .font(.subheadline)
 
-                        Text("Drafted from leftover words at your level")
+                        Text("Built around one word you still need")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
 
-                        Text("Tap a word for its meaning. Orange = likely new. Flag words you need help with.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if !isPracticeActive {
+                            Text("Tap a word for its meaning. Orange = likely new. Flag words you need help with, then read aloud.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
                         TokenFlowView(
                             tokens: report.tokens,
                             predictedUnknown: report.predictedUnknown,
                             flagged: learning.flaggedTokenIndexes,
-                            selected: learning.selectedTokenIndex,
-                            onTap: { learning.selectWord(tokenIndex: $0) }
+                            selected: isPracticeActive ? nil : learning.selectedTokenIndex,
+                            onTap: { index in
+                                guard !isPracticeActive else { return }
+                                learning.selectWord(tokenIndex: index)
+                            }
                         )
 
                         Text(text.glossEnglish)
                             .foregroundStyle(.secondary)
 
-                        if !learning.flaggedTokenIndexes.isEmpty {
-                            let flagged = learning.flaggedTokenIndexes.sorted().compactMap { idx -> String? in
-                                guard report.tokens.indices.contains(idx), report.tokens[idx].isWord else { return nil }
-                                return report.tokens[idx].surface
-                            }
-                            if !flagged.isEmpty {
-                                Text("Record a short summary using: \(flagged.joined(separator: ", "))")
+                        if !isPracticeActive {
+                            if !learning.flaggedTokenIndexes.isEmpty {
+                                let flagged = learning.flaggedTokenIndexes.sorted().compactMap { idx -> String? in
+                                    guard report.tokens.indices.contains(idx), report.tokens[idx].isWord else { return nil }
+                                    return report.tokens[idx].surface
+                                }
+                                if !flagged.isEmpty {
+                                    Text("Flagged (stay in learning): \(flagged.joined(separator: ", "))")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("Read the sentence aloud. Unflagged focus words become known when you read it correctly.")
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
                             }
-                        } else {
-                            Text("Record a short summary of the text (focus words are required if you flag nothing).")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
                         }
 
-                        Button("Record summary") {
-                            Task { await learning.commitFlagsAndStartSpeaking() }
-                        }
-                        .buttonStyle(.borderedProminent)
+                        practiceControls
                     }
                 }
                 .padding(32)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let word = learning.selectedWord {
+            if !isPracticeActive, let word = learning.selectedWord {
                 WordInspectorView(
                     word: word,
                     isFlagged: learning.flaggedTokenIndexes.contains(word.tokenIndex),
@@ -240,6 +268,94 @@ private struct ReadingDetailView: View {
                     glossSource: learning.glossSource,
                     onToggleFlag: { learning.toggleFlagOnSelectedWord() }
                 )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var practiceControls: some View {
+        if let asrError = learning.lastASRError {
+            Text(asrError)
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        }
+
+        if !learning.lastTranscript.isEmpty {
+            Text("You said: \(learning.lastTranscript)")
+                .font(.title3)
+        }
+
+        if let feedback = learning.lastSummaryFeedback {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(feedback.verdict == .correct ? "Correct" : "Keep going")
+                    .font(.headline)
+                if !feedback.explanation.isEmpty {
+                    Text(feedback.explanation)
+                }
+                if !feedback.missingRequiredWords.isEmpty {
+                    Text("Still need: \(feedback.missingRequiredWords.joined(separator: ", "))")
+                        .foregroundStyle(.orange)
+                }
+                Text("Model sentence").font(.caption).foregroundStyle(.secondary)
+                Text(feedback.correction).font(.title3.weight(.semibold))
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        }
+
+        if learning.isSpeakingCorrection {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(learning.speakingDetail.isEmpty ? "Playing…" : learning.speakingDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        HStack(spacing: 12) {
+            switch learning.phase {
+            case .reading:
+                Button("Read aloud") {
+                    Task { await learning.commitFlagsAndStartSpeaking() }
+                }
+                .buttonStyle(.borderedProminent)
+            case .recordingSummary:
+                Button("Stop & grade") {
+                    Task { await learning.stopSummaryAndGrade() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            case .transcribing, .grading:
+                ProgressView("Grading…")
+            case .summaryFeedback:
+                Button("Try again") {
+                    Task { await learning.retrySummaryAndRecord() }
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Hear model") {
+                    Task { await learning.speakCorrection() }
+                }
+                .disabled(learning.isSpeakingCorrection)
+                Button("Back") { learning.finishToReading() }
+            case .completed:
+                Button("Done") { learning.finishToReading() }
+                    .buttonStyle(.borderedProminent)
+                Button("Hear model") {
+                    Task { await learning.speakCorrection() }
+                }
+                .disabled(learning.isSpeakingCorrection)
+            case .speakingSummary:
+                Button("Record") {
+                    Task { await learning.startRecordingForSummary() }
+                }
+                .buttonStyle(.borderedProminent)
+            default:
+                EmptyView()
             }
         }
     }
@@ -388,117 +504,3 @@ private struct TokenWrap: Layout {
         }
     }
 }
-
-private struct ReviewDetailView: View {
-    @ObservedObject var learning: LearningEngine
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("FSRS review").font(.title2.weight(.semibold))
-            if let card = learning.currentReview {
-                Text(card.surfaceForm).font(.largeTitle.weight(.bold))
-                if !card.glossEnglish.isEmpty {
-                    Text(card.glossEnglish).font(.title3).foregroundStyle(.secondary)
-                }
-                if !card.contextSentence.isEmpty {
-                    Text(card.contextSentence).foregroundStyle(.secondary)
-                }
-                Text(learning.speakPrompt).font(.callout)
-                HStack {
-                    Button("Hear") { Task { await learning.speakReviewPrompt() } }
-                    if learning.phase == .recordingReview {
-                        Button("Stop") { Task { await learning.stopReviewAndGrade(rating: .good) } }
-                            .buttonStyle(.borderedProminent).tint(.red)
-                    } else {
-                        Button("Record") { Task { await learning.startRecordingForReview() } }
-                            .buttonStyle(.borderedProminent)
-                    }
-                }
-                HStack {
-                    Button("Again") { Task { await learning.stopReviewAndGrade(rating: .again) } }
-                    Button("Hard") { Task { await learning.stopReviewAndGrade(rating: .hard) } }
-                    Button("Good") { Task { await learning.stopReviewAndGrade(rating: .good) } }
-                    Button("Easy") { Task { await learning.stopReviewAndGrade(rating: .easy) } }
-                }
-            }
-            Spacer()
-        }
-        .padding(32)
-    }
-}
-
-private struct SummaryDetailView: View {
-    @ObservedObject var learning: LearningEngine
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Speak your summary").font(.title2.weight(.semibold))
-            Text(learning.speakPrompt).font(.title3)
-            if let text = learning.selectedText {
-                Text(text.body).font(.callout).foregroundStyle(.secondary)
-            }
-            if let asrError = learning.lastASRError {
-                Text(asrError)
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-            }
-            if !learning.lastTranscript.isEmpty {
-                Text("You said: \(learning.lastTranscript)").font(.title3)
-            }
-            if let feedback = learning.lastSummaryFeedback {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(feedback.verdict == .correct ? "Correct" : "Keep going").font(.headline)
-                    Text(feedback.explanation)
-                    if !feedback.missingRequiredWords.isEmpty {
-                        Text("Still need: \(feedback.missingRequiredWords.joined(separator: ", "))")
-                            .foregroundStyle(.orange)
-                    }
-                    Text("Model answer").font(.caption).foregroundStyle(.secondary)
-                    Text(feedback.correction).font(.title3.weight(.semibold))
-                }
-                .padding()
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            }
-
-            if learning.isSpeakingCorrection {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(learning.speakingDetail.isEmpty ? "Playing…" : learning.speakingDetail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            HStack(spacing: 12) {
-                switch learning.phase {
-                case .recordingSummary:
-                    Button("Stop & grade") { Task { await learning.stopSummaryAndGrade() } }
-                        .buttonStyle(.borderedProminent).tint(.red)
-                case .transcribing, .grading:
-                    ProgressView("Grading…")
-                case .summaryFeedback:
-                    Button("Try again") { Task { await learning.retrySummaryAndRecord() } }
-                        .buttonStyle(.borderedProminent)
-                    Button("Hear model") { Task { await learning.speakCorrection() } }
-                        .disabled(learning.isSpeakingCorrection)
-                    Button("Back") { learning.finishToReading() }
-                case .completed:
-                    Button("Done") { learning.finishToReading() }.buttonStyle(.borderedProminent)
-                    Button("Hear model") { Task { await learning.speakCorrection() } }
-                        .disabled(learning.isSpeakingCorrection)
-                default:
-                    // Idle speak screen only after a mic/ASR hiccup — one tap to resume.
-                    Button("Record") { Task { await learning.startRecordingForSummary() } }
-                        .buttonStyle(.borderedProminent)
-                }
-            }
-            Spacer()
-        }
-        .padding(32)
-    }
-}
-

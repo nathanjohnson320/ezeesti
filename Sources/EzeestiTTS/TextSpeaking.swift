@@ -92,7 +92,14 @@ actor NeurokoneSession {
         }
         try stdinHandle.write(contentsOf: data)
 
-        let response = try await readJSONLine()
+        let response: [String: Any]
+        do {
+            response = try await readJSONLine()
+        } catch {
+            // A leaked log line can desync the JSON protocol — recycle the worker.
+            stop()
+            throw error
+        }
         guard (response["ok"] as? Bool) == true else {
             let message = (response["error"] as? String) ?? "Neurokõne synthesize failed"
             throw EzeestiError.ttsFailed(message)
@@ -183,7 +190,8 @@ actor NeurokoneSession {
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 var buffer = Data()
-                while true {
+                let deadline = Date().addingTimeInterval(120)
+                while Date() < deadline {
                     let chunk = stdoutHandle.availableData
                     if chunk.isEmpty {
                         if processRef?.isRunning != true {
@@ -194,13 +202,15 @@ actor NeurokoneSession {
                         continue
                     }
                     buffer.append(chunk)
-                    if let text = String(data: buffer, encoding: .utf8),
-                       let newline = text.firstIndex(of: "\n") {
+                    while let text = String(data: buffer, encoding: .utf8),
+                          let newline = text.firstIndex(of: "\n") {
                         let line = String(text[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
-                        // Skip leftover READY if any
-                        if line == "READY" || line.isEmpty {
-                            let rest = String(text[text.index(after: newline)...])
-                            buffer = Data(rest.utf8)
+                        let rest = String(text[text.index(after: newline)...])
+                        buffer = Data(rest.utf8)
+
+                        // Skip protocol noise and library log lines that leak onto stdout
+                        // (e.g. "INFO:synthesizer.py:76: Request received: …").
+                        if line.isEmpty || line == "READY" || !line.hasPrefix("{") {
                             continue
                         }
                         guard let data = line.data(using: .utf8),
@@ -212,6 +222,7 @@ actor NeurokoneSession {
                         return
                     }
                 }
+                continuation.resume(throwing: EzeestiError.ttsFailed("Neurokõne timed out waiting for JSON response"))
             }
         }
     }

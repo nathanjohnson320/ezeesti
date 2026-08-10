@@ -95,6 +95,22 @@ def _synthesize(synth, text: str, out_path: Path, speaker: str, speed: float) ->
     return out_path
 
 
+def _configure_logging() -> None:
+    """Keep stdout clean for the JSON protocol (Swift reads one JSON line per request)."""
+    import logging
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    # Downstream libs (speechbrain / tts_worker) otherwise spam INFO onto the console.
+    for name in ("tts_worker", "tts_worker.synthesizer", "speechbrain", "tensorflow"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def serve(synth, default_speaker: str, default_speed: float) -> int:
     print("READY", flush=True)
     for line in sys.stdin:
@@ -137,6 +153,7 @@ def main() -> int:
         help="Directory containing config.yaml + model_weights.hdf5",
     )
     args = parser.parse_args()
+    _configure_logging()
 
     try:
         worker_root, worker_models = _resolve_paths(args.worker_root, args.model_dir)

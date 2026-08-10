@@ -8,8 +8,6 @@ import EzeestiTTS
 public final class LearningEngine: ObservableObject {
     public enum Phase: Equatable {
         case idle
-        case reviewing
-        case recordingReview
         case reading
         case generatingPassage
         case speakingSummary
@@ -32,9 +30,7 @@ public final class LearningEngine: ObservableObject {
     @Published public private(set) var generationDetail: String = ""
     @Published public private(set) var glossSource: String? = nil
     @Published public private(set) var mustUseWords: [String] = []
-    @Published public private(set) var dueQueue: [VocabCard] = []
     @Published public private(set) var duePreview: [VocabCard] = []
-    @Published public private(set) var currentReview: VocabCard?
     @Published public private(set) var dueCount: Int = 0
     @Published public private(set) var progress: LearnerProgress = .empty
     @Published public private(set) var lastTranscript: String = ""
@@ -55,6 +51,8 @@ public final class LearningEngine: ObservableObject {
     /// Focus lemmas used in this session so consecutive generations do not repeat immediately.
     private var sessionFocusedLemmas: Set<String> = []
     private var pendingAdvanceAfterPerfect = false
+    /// When set, next generation prefers these due lemmas as focus words.
+    private var preferredDueFocus: [String] = []
 
     public init(
         vocab: VocabStore,
@@ -122,11 +120,30 @@ public final class LearningEngine: ObservableObject {
         refreshProgress()
     }
 
-    /// Always draft a fresh passage from the next high-frequency unknown lemmas.
+    /// Draft a fresh sentence from the next unknown / due lemmas.
     public func continueRecommendedReading() {
+        preferredDueFocus = []
         refreshProgress()
         generationTask?.cancel()
         generationTask = Task { await generateAndSelectNextPassage() }
+    }
+
+    /// Sidebar review: generate a sentence around due words and use the same read-aloud path.
+    public func startDueReview(preferringLemma lemma: String? = nil) {
+        do {
+            var due = try vocab.dueCards(limit: 15).map(\.lemma)
+            if let lemma {
+                let key = EstonianTokenizer.normalize(lemma)
+                due.removeAll { EstonianTokenizer.normalize($0) == key }
+                due.insert(key, at: 0)
+            }
+            preferredDueFocus = Array(due.prefix(1))
+            refreshProgress()
+            generationTask?.cancel()
+            generationTask = Task { await generateAndSelectNextPassage() }
+        } catch {
+            phase = .error(error.localizedDescription)
+        }
     }
 
     public func generateAndSelectNextPassage() async {
@@ -146,12 +163,21 @@ public final class LearningEngine: ObservableObject {
                     .filter { $0.familiarity == .learning }
                     .map(\.lemma)
             )
+            let dueLemmas: [String]
+            if preferredDueFocus.isEmpty {
+                dueLemmas = try vocab.dueCards(limit: 1).map(\.lemma)
+            } else {
+                dueLemmas = preferredDueFocus
+            }
+            preferredDueFocus = []
+
             let targets = LearnerProgress.targetLemmasForPassage(
                 workingLevel: progress.workingLevel,
                 knownLemmas: known,
                 learningLemmas: learning,
+                dueLemmas: dueLemmas,
                 alreadyFocused: sessionFocusedLemmas,
-                limit: 2
+                limit: 1
             )
 
             guard !targets.isEmpty else {
@@ -162,7 +188,7 @@ public final class LearningEngine: ObservableObject {
             }
 
             let focus = targets.map(\.lemma)
-            generationDetail = "Writing a passage with: \(focus.prefix(4).joined(separator: ", "))…"
+            generationDetail = "Writing a sentence with: \(focus.joined(separator: ", "))…"
 
             var glosses: [String: String] = [:]
             for lemma in focus {
@@ -178,20 +204,29 @@ public final class LearningEngine: ObservableObject {
                 focusGlosses: glosses
             )
 
-            let text: GradedText
+            var draft: GradedText
             do {
                 let raw = try await languageModel.complete(
                     system: prompt.system,
                     user: prompt.user,
-                    maxTokens: 320
+                    maxTokens: 220
                 )
                 if Task.isCancelled { return }
-                text = PassageGenerationParser.parse(raw, requiredFocus: focus, cefr: cefr)
+                draft = PassageGenerationParser.parse(raw, requiredFocus: focus, cefr: cefr)
                     ?? PassageGenerationParser.heuristic(requiredFocus: focus, cefr: cefr, glosses: glosses)
             } catch {
                 if Task.isCancelled { return }
-                text = PassageGenerationParser.heuristic(requiredFocus: focus, cefr: cefr, glosses: glosses)
+                draft = PassageGenerationParser.heuristic(requiredFocus: focus, cefr: cefr, glosses: glosses)
             }
+
+            generationDetail = "Checking the sentence…"
+            let text = await validateSentence(
+                draft,
+                focus: focus,
+                glosses: glosses,
+                cefr: cefr
+            )
+            if Task.isCancelled { return }
 
             for lemma in focus {
                 sessionFocusedLemmas.insert(EstonianTokenizer.normalize(lemma))
@@ -199,6 +234,74 @@ public final class LearningEngine: ObservableObject {
             selectText(text)
         } catch {
             if Task.isCancelled { return }
+            phase = .error(error.localizedDescription)
+        }
+    }
+
+    /// Feed the draft back through the model; accept a rewrite if the draft is weak.
+    private func validateSentence(
+        _ draft: GradedText,
+        focus: [String],
+        glosses: [String: String],
+        cefr: CEFRLevel
+    ) async -> GradedText {
+        let passageDraft = PassageDraft(
+            title: draft.title,
+            body: draft.body,
+            glossEnglish: draft.glossEnglish,
+            focusWords: draft.focusWords.isEmpty ? focus : draft.focusWords
+        )
+        let prompt = SentenceValidationPrompt(
+            cefr: cefr,
+            focusLemmas: focus,
+            focusGlosses: glosses,
+            draft: passageDraft
+        )
+
+        do {
+            let raw = try await languageModel.complete(
+                system: prompt.system,
+                user: prompt.user,
+                maxTokens: 220
+            )
+            if let validated = SentenceValidationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
+                return validated
+            }
+        } catch {
+            // Fall through to offline validation.
+        }
+
+        return SentenceValidationParser.heuristic(
+            draft: passageDraft,
+            requiredFocus: focus,
+            cefr: cefr,
+            glosses: glosses
+        )
+    }
+
+    /// Wipe known/learning progress and draft a fresh first sentence.
+    public func resetProgress() {
+        generationTask?.cancel()
+        do {
+            try vocab.resetProgress()
+            sessionFocusedLemmas = []
+            preferredDueFocus = []
+            pendingAdvanceAfterPerfect = false
+            selectedText = nil
+            familiarity = nil
+            flaggedTokenIndexes = []
+            selectedTokenIndex = nil
+            selectedWord = nil
+            isGeneratingGloss = false
+            glossSource = nil
+            mustUseWords = []
+            lastSummaryFeedback = nil
+            lastTranscript = ""
+            lastASRError = nil
+            speakPrompt = ""
+            refreshProgress()
+            continueRecommendedReading()
+        } catch {
             phase = .error(error.localizedDescription)
         }
     }
@@ -241,7 +344,6 @@ public final class LearningEngine: ObservableObject {
         let token = familiarity.tokens[tokenIndex]
         guard token.isWord else { return }
 
-        // Someone else may have filled cache since tap.
         let current = lookup(token: token, tokenIndex: tokenIndex)
         if current.glossEnglish != nil {
             if selectedTokenIndex == tokenIndex {
@@ -278,7 +380,6 @@ public final class LearningEngine: ObservableObject {
             selectedWord = lookup(token: token, tokenIndex: tokenIndex)
             glossSource = source
         } catch {
-            // Keep inspector usable without a gloss if EstLLM is busy/unavailable.
             guard selectedTokenIndex == tokenIndex else { return }
             selectedWord = lookup(token: token, tokenIndex: tokenIndex)
         }
@@ -296,11 +397,9 @@ public final class LearningEngine: ObservableObject {
         }
     }
 
-    /// Commits flagged (or focus) words and starts recording in one step —
-    /// reading → record → grade, with no idle "tap Record again" screen.
+    /// Commits flagged words (only) and starts recording the read-aloud.
     public func commitFlagsAndStartSpeaking() async {
         guard let text = selectedText, let familiarity else { return }
-        var words: [String] = []
         for index in flaggedTokenIndexes.sorted() {
             let token = familiarity.tokens[index]
             let gloss =
@@ -313,25 +412,13 @@ public final class LearningEngine: ObservableObject {
                     contextSentence: text.body,
                     glossEnglish: gloss
                 )
-                words.append(token.surface)
             } catch {
                 phase = .error(error.localizedDescription)
                 return
             }
         }
-        // Also include focus words if user flagged nothing — nudge n+1 practice.
-        if words.isEmpty {
-            words = text.focusWords
-            for w in words {
-                let gloss =
-                    WordGlossCatalog.gloss(forSurface: w)
-                    ?? (try? vocab.cachedGloss(forSurface: w))
-                    ?? ""
-                _ = try? vocab.flagWord(surface: w, contextSentence: text.body, glossEnglish: gloss)
-            }
-        }
-        mustUseWords = words
-        speakPrompt = "Speak a short Estonian summary. Use: \(words.joined(separator: ", "))"
+        mustUseWords = text.focusWords
+        speakPrompt = "Read the sentence aloud."
         lastSummaryFeedback = nil
         lastTranscript = ""
         lastASRError = nil
@@ -339,59 +426,8 @@ public final class LearningEngine: ObservableObject {
         await beginRecording(next: .recordingSummary)
     }
 
-    public func startFSRSReview(preferringLemma lemma: String? = nil) {
-        do {
-            var queue = try vocab.dueCards(limit: 15)
-            if let lemma {
-                let key = EstonianTokenizer.normalize(lemma)
-                if let match = queue.first(where: { $0.lemma == key }) {
-                    queue.removeAll { $0.lemma == key }
-                    queue.insert(match, at: 0)
-                }
-            }
-            dueQueue = queue
-            dueCount = queue.count
-            guard let first = queue.first else {
-                phase = selectedText == nil ? .idle : .reading
-                return
-            }
-            presentReview(first)
-        } catch {
-            phase = .error(error.localizedDescription)
-        }
-    }
-
-    public func startRecordingForReview() async {
-        await beginRecording(next: .recordingReview)
-    }
-
     public func startRecordingForSummary() async {
         await beginRecording(next: .recordingSummary)
-    }
-
-    public func stopReviewAndGrade(rating: FSRSRating) async {
-        guard let card = currentReview else { return }
-        // Optional: still capture speech for practice feel.
-        if phase == .recordingReview {
-            _ = try? recorder.stopRecording()
-        }
-        do {
-            try vocab.applyRating(card, rating: rating)
-            dueQueue.removeAll { $0.lemma == card.lemma }
-            if let next = dueQueue.first {
-                presentReview(next)
-            } else {
-                currentReview = nil
-                refreshProgress()
-                if selectedText != nil {
-                    phase = .reading
-                } else {
-                    continueRecommendedReading()
-                }
-            }
-        } catch {
-            phase = .error(error.localizedDescription)
-        }
     }
 
     public func stopSummaryAndGrade() async {
@@ -400,14 +436,20 @@ public final class LearningEngine: ObservableObject {
             lastASRError = nil
             let audioURL = try recorder.stopRecording()
             phase = .transcribing
-            let transcript = try await recognizer.transcribe(audioURL: audioURL)
-            lastTranscript = transcript.text
+            let transcript = try await recognizer.transcribe(
+                audioURL: audioURL,
+                initialPrompt: text.body
+            )
+            let said = TranscriptCleaner.align(toExpected: text.body, transcript: transcript.text)
+            lastTranscript = said
 
             phase = .grading
+            let focus = text.focusWords.isEmpty ? mustUseWords : text.focusWords
+            mustUseWords = focus
             let prompt = SpokenSummaryPrompt(
                 text: text,
-                mustUseWords: mustUseWords,
-                transcript: transcript.text
+                mustUseWords: focus,
+                transcript: said
             )
 
             let feedback: SpokenSummaryFeedback
@@ -415,36 +457,24 @@ public final class LearningEngine: ObservableObject {
                 let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
                 feedback = SpokenSummaryFeedbackParser.parse(
                     raw,
-                    mustUse: mustUseWords,
-                    transcript: transcript.text,
+                    mustUse: focus,
+                    transcript: said,
                     sourceBody: text.body
                 )
             } catch {
                 feedback = SpokenSummaryFeedbackParser.heuristic(
-                    mustUse: mustUseWords,
-                    transcript: transcript.text,
+                    mustUse: focus,
+                    transcript: said,
                     sourceBody: text.body
                 )
             }
 
             lastSummaryFeedback = feedback
+            try applyVocabOutcome(feedback: feedback, text: text)
 
-            if feedback.verdict == .correct, feedback.missingRequiredWords.isEmpty {
-                try vocab.markKnownImmediate(mustUseWords)
-                pendingAdvanceAfterPerfect = true
-            } else {
-                if !feedback.missingRequiredWords.isEmpty {
-                    try vocab.markProducedWeakly(feedback.missingRequiredWords)
-                }
-                if !feedback.usedRequiredWords.isEmpty {
-                    try vocab.markProducedSuccessfully(feedback.usedRequiredWords)
-                }
-                pendingAdvanceAfterPerfect = false
-            }
             refreshProgress()
             phase = feedback.verdict == .correct ? .completed : .summaryFeedback
         } catch {
-            // Keep the speak loop usable — hard Error screen used to strand the learner.
             lastASRError = error.localizedDescription
             lastTranscript = ""
             phase = .speakingSummary
@@ -468,11 +498,6 @@ public final class LearningEngine: ObservableObject {
         }
     }
 
-    public func speakReviewPrompt() async {
-        guard let card = currentReview else { return }
-        try? await speaker.speak(card.surfaceForm, languageCode: "et-EE")
-    }
-
     public func retrySummary() {
         pendingAdvanceAfterPerfect = false
         lastSummaryFeedback = nil
@@ -488,7 +513,6 @@ public final class LearningEngine: ObservableObject {
     }
 
     private func beginRecording(next: Phase) async {
-        // Don't fight Neurokõne / system playback for the mic.
         isSpeakingCorrection = false
         speakingDetail = ""
         lastASRError = nil
@@ -535,16 +559,55 @@ public final class LearningEngine: ObservableObject {
         }
     }
 
-    private func presentReview(_ card: VocabCard) {
-        currentReview = card
-        speakPrompt = "Say a sentence with: \(card.surfaceForm)"
-        if !card.glossEnglish.isEmpty {
-            speakPrompt += "\n(\(card.glossEnglish))"
+    private func applyVocabOutcome(feedback: SpokenSummaryFeedback, text: GradedText) throws {
+        let focus = text.focusWords.isEmpty ? mustUseWords : text.focusWords
+        let flaggedLemmas = flaggedFocusLemmas(in: text)
+        let unflagged = focus.filter { !flaggedLemmas.contains(EstonianTokenizer.normalize($0)) }
+        let flagged = focus.filter { flaggedLemmas.contains(EstonianTokenizer.normalize($0)) }
+
+        if feedback.verdict == .correct, feedback.missingRequiredWords.isEmpty {
+            if !unflagged.isEmpty {
+                try vocab.markKnownWithBackoff(unflagged)
+            }
+            if !flagged.isEmpty {
+                try vocab.markLearningDueSoon(flagged)
+            }
+            pendingAdvanceAfterPerfect = true
+        } else {
+            var weak = Set(feedback.missingRequiredWords.map { EstonianTokenizer.normalize($0) })
+            for word in flagged {
+                weak.insert(EstonianTokenizer.normalize(word))
+            }
+            for word in focus where feedback.verdict != .correct {
+                // Incorrect/close overall: keep focus words in learning until a clean read.
+                weak.insert(EstonianTokenizer.normalize(word))
+            }
+            if !weak.isEmpty {
+                try vocab.markLearningDueSoon(Array(weak))
+            }
+            pendingAdvanceAfterPerfect = false
         }
-        if !card.contextSentence.isEmpty {
-            speakPrompt += "\nContext: \(card.contextSentence)"
+    }
+
+    private func flaggedFocusLemmas(in text: GradedText) -> Set<String> {
+        guard let familiarity else { return [] }
+        var set = Set<String>()
+        for index in flaggedTokenIndexes {
+            guard familiarity.tokens.indices.contains(index) else { continue }
+            let token = familiarity.tokens[index]
+            guard token.isWord else { continue }
+            set.insert(EstonianTokenizer.normalize(token.surface))
         }
-        phase = .reviewing
+        // Also match focus lemmas if the flagged surface is an inflection.
+        let focusKeys = Set(text.focusWords.map { EstonianTokenizer.normalize($0) })
+        if set.isEmpty { return set }
+        var expanded = set
+        for focus in focusKeys {
+            if set.contains(where: { $0.hasPrefix(focus) || focus.hasPrefix($0) || $0 == focus }) {
+                expanded.insert(focus)
+            }
+        }
+        return expanded
     }
 
     private func lookup(token: TextToken, tokenIndex: Int) -> WordLookup {
