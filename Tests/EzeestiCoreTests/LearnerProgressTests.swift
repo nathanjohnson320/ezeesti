@@ -51,4 +51,73 @@ final class LearnerProgressTests: XCTestCase {
         )
         XCTAssertEqual(pick?.id, "a1")
     }
+
+    func testShouldGenerateWhenTextsTooFamiliar() {
+        let texts = [
+            GradedText(
+                id: "easy",
+                title: "Easy",
+                cefr: .a1,
+                body: "Ma joon kohvi.",
+                glossEnglish: "I drink coffee.",
+                focusWords: ["joon"]
+            ),
+        ]
+        let known: Set<String> = ["ma", "joon", "kohvi"]
+        XCTAssertTrue(
+            LearnerProgress.shouldGenerateNewText(
+                from: texts,
+                workingLevel: .a1,
+                knownLemmas: known
+            )
+        )
+        XCTAssertFalse(
+            LearnerProgress.shouldGenerateNewText(
+                from: texts,
+                workingLevel: .a1,
+                knownLemmas: ["ma"]
+            )
+        )
+    }
+
+    func testTargetLemmasPreferUnknownHighFrequency() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForPassage(
+            workingLevel: .a1,
+            knownLemmas: ["ma", "ja", "on", "ei"],
+            alreadyFocused: ["isa"],
+            limit: 5
+        )
+        XCTAssertFalse(targets.isEmpty)
+        XCTAssertFalse(targets.contains(where: { EstonianTokenizer.normalize($0.lemma) == "ma" }))
+        XCTAssertFalse(targets.contains(where: { EstonianTokenizer.normalize($0.lemma) == "isa" }))
+        XCTAssertTrue(targets.allSatisfy(\.isPassageFocusCandidate))
+    }
+
+    func testTargetLemmasSkipFunctionWords() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForPassage(
+            workingLevel: .a1,
+            knownLemmas: ["ma", "ja", "on", "ei"],
+            limit: 8
+        )
+        let lemmas = Set(targets.map { EstonianTokenizer.normalize($0.lemma) })
+        XCTAssertFalse(lemmas.contains("ära"))
+        XCTAssertFalse(lemmas.contains("kõik"))
+        XCTAssertFalse(lemmas.contains("kuidas"))
+        XCTAssertTrue(targets.allSatisfy(\.isPassageFocusCandidate))
+    }
+
+    func testTargetLemmasSkipImmediatelyKnown() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let known: Set<String> = ["ma", "ja", "on", "ei", "tere", "hommik"]
+        let targets = LearnerProgress.targetLemmasForPassage(
+            workingLevel: .a1,
+            knownLemmas: known,
+            limit: 10
+        )
+        for entry in targets {
+            XCTAssertFalse(known.contains(EstonianTokenizer.normalize(entry.lemma)))
+        }
+    }
 }

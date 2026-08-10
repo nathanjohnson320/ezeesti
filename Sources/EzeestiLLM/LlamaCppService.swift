@@ -38,11 +38,11 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         shutdown()
     }
 
-    public func complete(system: String, user: String) async throws -> String {
+    public func complete(system: String, user: String, maxTokens: Int = 160) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let text = try self.completeSync(system: system, user: user)
+                    let text = try self.completeSync(system: system, user: user, maxTokens: maxTokens)
                     continuation.resume(returning: text)
                 } catch {
                     continuation.resume(throwing: error)
@@ -102,7 +102,7 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         }
     }
 
-    private func completeSync(system: String, user: String) throws -> String {
+    private func completeSync(system: String, user: String, maxTokens: Int) throws -> String {
         try ensureSymbols()
 
         let prompt = """
@@ -134,11 +134,12 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
             throw EzeestiError.llmFailed(String(cString: err))
         }
 
+        let tokenBudget = max(32, min(maxTokens, 512))
         var out = [CChar](repeating: 0, count: 32_768)
         let rc = prompt.withCString { promptC in
             completeFn(
                 promptC,
-                128,
+                Int32(tokenBudget),
                 Float(temperature),
                 &out,
                 Int32(out.count),

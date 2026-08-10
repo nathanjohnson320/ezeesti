@@ -8,6 +8,7 @@ public final class MicrophoneRecorder: AudioRecording {
 
     private var recorder: AVAudioRecorder?
     private var outputURL: URL?
+    private var startedAt: Date?
 
     public init() {}
 
@@ -42,6 +43,7 @@ public final class MicrophoneRecorder: AudioRecording {
 
         recorder = audioRecorder
         outputURL = url
+        startedAt = Date()
         isRecording = true
     }
 
@@ -50,9 +52,27 @@ public final class MicrophoneRecorder: AudioRecording {
             throw EzeestiError.recordingFailed("Not currently recording")
         }
 
+        recorder.updateMeters()
+        let peak = recorder.peakPower(forChannel: 0)
+        let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+
         recorder.stop()
         self.recorder = nil
         isRecording = false
+        startedAt = nil
+
+        if duration < 0.6 {
+            throw EzeestiError.recordingFailed(
+                "Recording was too short (\(String(format: "%.1f", duration))s) — hold Record while you speak, then Stop."
+            )
+        }
+        // AVAudioRecorder metering: 0 dB = full scale, -160 = silence. Below -45 is usually no voice.
+        if peak < -45 {
+            throw EzeestiError.recordingFailed(
+                "Mic captured almost no sound — check the input device and speak closer to the microphone."
+            )
+        }
+
         return outputURL
     }
 }

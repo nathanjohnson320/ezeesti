@@ -70,6 +70,20 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         let started = Date()
         try ensureLoaded()
         let samples = try Self.loadPCM16kMono(url: audioURL)
+        let durationSeconds = Double(samples.count) / 16_000.0
+
+        if samples.count < 8_000 {
+            throw EzeestiError.transcriptionFailed(
+                "Audio too short (\(String(format: "%.1f", durationSeconds))s) — speak a full sentence before stopping."
+            )
+        }
+
+        let rms = Self.rms(samples)
+        if rms < 0.004 {
+            throw EzeestiError.transcriptionFailed(
+                "Audio is nearly silent — check the mic input and try again."
+            )
+        }
 
         let text: String = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -83,12 +97,15 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         }
 
         let cleaned = TranscriptCleaner.clean(text)
-        guard !cleaned.isEmpty else {
-            throw EzeestiError.transcriptionFailed("No clear speech detected — try saying the sentence again")
+        let usable = cleaned.isEmpty ? TranscriptCleaner.collapseRepeatedWords(text.trimmingCharacters(in: .whitespacesAndNewlines)) : cleaned
+        guard !usable.isEmpty else {
+            throw EzeestiError.transcriptionFailed(
+                "No clear speech detected — speak louder/closer and try the sentence again."
+            )
         }
 
         return Transcript(
-            text: cleaned,
+            text: usable,
             languageHint: language,
             durationSeconds: Date().timeIntervalSince(started)
         )
@@ -224,5 +241,14 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
             throw EzeestiError.transcriptionFailed("Missing converted float data")
         }
         return Array(UnsafeBufferPointer(start: ch, count: n))
+    }
+
+    private static func rms(_ samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var sum: Float = 0
+        for sample in samples {
+            sum += sample * sample
+        }
+        return sqrt(sum / Float(samples.count))
     }
 }

@@ -6,13 +6,15 @@
 
 ## Learning loop (implemented)
 
-1. Progress tracks known/learning lemmas in the background and estimates a working CEFR band
-2. Due flagged words surface as review (speak + FSRS); nothing to pick from a lesson list
-3. Recommended graded text continues at your level; all texts stay under a disclosure
+1. Progress tracks known/learning lemmas; only word state is persisted (SwiftData `VocabCard`)
+2. Each load drafts an ephemeral graded passage around **1–2 content lemmas** (noun/verb/adjective) at the working CEFR band — a short everyday scene, not a vocabulary list
+3. Due flagged/weak words surface as FSRS review; known words are never retargeted
 4. Tap a word → English gloss (bundled, cached, or EstLLM on demand) + CEFR/POS; flag only what you need help with
-5. Speak a short summary using flagged words; Whisper + EstLLM grade; FSRS updates
+5. From reading, **Record summary** starts the mic immediately (required words shown on the reading page); stop to grade with Whisper + EstLLM
+6. Perfect grade → those required lemmas become **known immediately**; imperfect → FSRS Again/Good while staying `.learning` until graduation
+7. After a perfect Done, the next passage is generated from leftover words
 
-The app home is **Learn only**. Fixed-sentence Drill packs (~handful of lines) were removed from the UI — they don’t use the lexicon corpus and aren’t a curriculum.
+The app home is **Learn only**. There is no hardcoded text catalog and no disk cache of passages — texts live only in the current session.
 
 `EzeestiTutor` / lesson packs remain in the tree for warmup and possible later pattern drills generated from the 10k lexicon + EstLLM.
 
@@ -20,7 +22,7 @@ The app home is **Learn only**. Fixed-sentence Drill packs (~handful of lines) w
 
 | Module | Role |
 |---|---|
-| `EzeestiCore` | FSRS, tokenizer, graded texts, lexicon, lesson packs |
+| `EzeestiCore` | FSRS, tokenizer, graded text types, lexicon, lesson packs |
 | `EzeestiLearning` | SwiftData vocab store, `LearningEngine` |
 | `EzeestiTutor` | Warmup + unused drill engine (kept for reuse) |
 | ASR / LLM / TTS | Used by Learn |
@@ -32,6 +34,5 @@ Application Support `Ezeesti/Models/`: Whisper ggml, EstLLM GGUF, native dylibs,
 ## Later
 
 - One shared Whisper/EstLLM instance (warmup currently on TutorEngine)
-- More graded texts / EstLLM-generated passages from lexicon
 - Vabamorf lemmas
 - Phoneme pronunciation coaching

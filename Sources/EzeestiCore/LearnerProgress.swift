@@ -116,4 +116,88 @@ public struct LearnerProgress: Sendable, Equatable {
 
         return texts.max(by: { score($0) < score($1) })
     }
+
+    /// True when the best available text is already too familiar — time to generate a new one.
+    public static func shouldGenerateNewText(
+        from texts: [GradedText],
+        workingLevel: CEFRLevel,
+        knownLemmas: Set<String>,
+        exhaustedKnownRatio: Double = 0.90
+    ) -> Bool {
+        guard let best = recommendText(from: texts, workingLevel: workingLevel, knownLemmas: knownLemmas) else {
+            return true
+        }
+        let report = GradedTextCatalog.familiarity(text: best, knownLemmas: knownLemmas)
+        return report.knownRatio >= exhaustedKnownRatio
+    }
+
+    /// Pick high-frequency A1/A2 **content** lemmas the learner does not yet know.
+    /// Prefers a single teachable noun/verb/adjective for a short scene (not a word list).
+    public static func targetLemmasForPassage(
+        workingLevel: CEFRLevel,
+        knownLemmas: Set<String>,
+        learningLemmas: Set<String> = [],
+        alreadyFocused: Set<String> = [],
+        limit: Int = 2
+    ) -> [LexiconEntry] {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let bands: [CEFRLevel]
+        switch workingLevel {
+        case .a1:
+            bands = [.a1]
+        case .a2:
+            bands = [.a1, .a2]
+        default:
+            bands = [.a1, .a2, workingLevel]
+        }
+
+        var pool: [LexiconEntry] = []
+        for band in bands {
+            pool.append(contentsOf: LexiconCatalog.shared.lemmas(at: band))
+        }
+
+        let ranked = pool
+            .filter { entry in
+                let key = EstonianTokenizer.normalize(entry.lemma)
+                if knownLemmas.contains(key) { return false }
+                // Skip ultra-short glue already in seed (ma, ja, on…) unless learning.
+                if GradedTextCatalog.fallbackSeed.contains(key), !learningLemmas.contains(key) {
+                    return false
+                }
+                // Prefer content words; allow function words only if already learning them.
+                if !entry.isPassageFocusCandidate, !learningLemmas.contains(key) {
+                    return false
+                }
+                return true
+            }
+            .sorted { lhs, rhs in
+                let lKey = EstonianTokenizer.normalize(lhs.lemma)
+                let rKey = EstonianTokenizer.normalize(rhs.lemma)
+                let lLearning = learningLemmas.contains(lKey)
+                let rLearning = learningLemmas.contains(rKey)
+                if lLearning != rLearning { return lLearning && !rLearning }
+                let lContent = lhs.isPassageFocusCandidate
+                let rContent = rhs.isPassageFocusCandidate
+                if lContent != rContent { return lContent && !rContent }
+                let lUsed = alreadyFocused.contains(lKey)
+                let rUsed = alreadyFocused.contains(rKey)
+                if lUsed != rUsed { return !lUsed && rUsed }
+                let lFreq = lhs.freqRank ?? 50_000
+                let rFreq = rhs.freqRank ?? 50_000
+                if lFreq != rFreq { return lFreq < rFreq }
+                return lhs.lemma < rhs.lemma
+            }
+
+        return Array(ranked.prefix(max(1, limit)))
+    }
+
+    public static func focusLemmas(in texts: [GradedText]) -> Set<String> {
+        var set = Set<String>()
+        for text in texts {
+            for word in text.focusWords {
+                set.insert(EstonianTokenizer.normalize(word))
+            }
+        }
+        return set
+    }
 }

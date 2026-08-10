@@ -181,6 +181,16 @@ public final class TutorEngine: ObservableObject {
             }
         }
 
+        if speaker is NeurokoneTTSService {
+            warmupState = .loadingTutor
+            warmupDetail = "Loading Neurokõne voice (once)…"
+            do {
+                try await speaker.prepare()
+            } catch {
+                warmupDetail = "Neurokõne warmup failed — first Hear may be slow"
+            }
+        }
+
         warmupDetail = "Ready"
         warmupState = .ready
     }

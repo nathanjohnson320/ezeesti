@@ -29,6 +29,16 @@ public struct GradedText: Codable, Sendable, Identifiable, Hashable {
         self.glossEnglish = glossEnglish
         self.focusWords = focusWords
     }
+
+    public var isGenerated: Bool {
+        id.hasPrefix("gen-")
+    }
+
+    public static func makeGeneratedID() -> String {
+        let stamp = Int(Date().timeIntervalSince1970)
+        let suffix = UUID().uuidString.prefix(8).lowercased()
+        return "gen-\(stamp)-\(suffix)"
+    }
 }
 
 public struct TextFamiliarityReport: Sendable {

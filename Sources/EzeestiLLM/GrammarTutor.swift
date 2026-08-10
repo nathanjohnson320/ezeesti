@@ -2,7 +2,13 @@ import Foundation
 import EzeestiCore
 
 public protocol LanguageModeling: Sendable {
-    func complete(system: String, user: String) async throws -> String
+    func complete(system: String, user: String, maxTokens: Int) async throws -> String
+}
+
+public extension LanguageModeling {
+    func complete(system: String, user: String) async throws -> String {
+        try await complete(system: system, user: user, maxTokens: 160)
+    }
 }
 
 public struct GrammarTutorPrompt {

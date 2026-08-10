@@ -291,7 +291,7 @@ public final class VocabStore: ObservableObject {
 
     public func dueCards(now: Date = Date(), limit: Int = 20) throws -> [VocabCard] {
         let due = try fetchAll().filter { card in
-            if card.familiarity == .known && card.due > now { return false }
+            if card.familiarity == .known { return false }
             return card.due <= now
         }
         return Array(due.sorted { $0.due < $1.due }.prefix(limit))
@@ -367,5 +367,35 @@ public final class VocabStore: ObservableObject {
             guard let card = all.first(where: { $0.lemma == key }) else { continue }
             try applyRating(card, rating: .again)
         }
+    }
+
+    /// Perfect spoken summary: mark required lemmas known immediately so they are never retargeted.
+    public func markKnownImmediate(_ lemmas: [String], now: Date = Date()) throws {
+        let all = try fetchAll()
+        let farDue = now.addingTimeInterval(365 * 86_400)
+        for lemma in lemmas {
+            let key = EstonianTokenizer.normalize(lemma)
+            let card: VocabCard
+            if let existing = all.first(where: { $0.lemma == key }) {
+                card = existing
+            } else {
+                card = VocabCard(
+                    lemma: key,
+                    surfaceForm: lemma,
+                    familiarity: .known
+                )
+                modelContext.insert(card)
+            }
+            card.familiarity = .known
+            var fsrs = card.fsrsCard
+            fsrs.state = .review
+            fsrs.scheduledDays = 365
+            fsrs.due = farDue
+            fsrs.lastReview = now
+            if fsrs.reps == 0 { fsrs.reps = 1 }
+            card.fsrsCard = fsrs
+            card.updatedAt = now
+        }
+        try modelContext.save()
     }
 }

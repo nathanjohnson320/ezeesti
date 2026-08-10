@@ -40,4 +40,29 @@ final class VocabStoreTests: XCTestCase {
         try store.saveGloss(forSurface: "värsket", glossEnglish: "fresh", source: "estllm")
         XCTAssertEqual(try store.cachedGloss(forSurface: "Värsket"), "fresh")
     }
+
+    @MainActor
+    func testMarkKnownImmediateExcludesFromDueAndTargets() throws {
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let store = VocabStore(modelContext: container.mainContext)
+
+        _ = try store.flagWord(surface: "kohvi", contextSentence: "Ma joon kohvi.")
+        try store.markKnownImmediate(["kohvi", "piima"])
+
+        let known = try store.knownLemmas()
+        XCTAssertTrue(known.contains("kohvi"))
+        XCTAssertTrue(known.contains("piima"))
+        XCTAssertFalse(try store.dueCards().contains(where: { $0.lemma == "kohvi" }))
+
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForPassage(
+            workingLevel: .a1,
+            knownLemmas: known,
+            limit: 20
+        )
+        XCTAssertFalse(targets.contains(where: { EstonianTokenizer.normalize($0.lemma) == "kohvi" }))
+        XCTAssertFalse(targets.contains(where: { EstonianTokenizer.normalize($0.lemma) == "piima" }))
+    }
 }

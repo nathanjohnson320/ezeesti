@@ -85,17 +85,19 @@ int ezeesti_whisper_transcribe(
     params.print_special = false;
     params.print_timestamps = false;
     params.no_timestamps = true;
-    params.single_segment = true;
     params.suppress_nst = true;
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
-    params.no_speech_thold = 0.8f;
-    params.entropy_thold = 2.0f;
-    params.max_len = 120;
+    // Lower than stock 0.6 so quiet mic / short Estonian clips are less often dropped as silence.
+    params.no_speech_thold = 0.45f;
+    params.entropy_thold = 2.4f;
+    params.max_len = 0;
     params.language = language ? language : "et";
     params.detect_language = false;
     params.initial_prompt = initial_prompt;
     params.n_threads = 4;
+    // Prefer multi-segment for longer spoken summaries.
+    params.single_segment = false;
 
     int rc = whisper_full(g_ctx, params, samples, n_samples);
     if (rc != 0) {

@@ -14,6 +14,17 @@ public struct LexiconEntry: Codable, Sendable, Hashable, Identifiable {
         self.freqRank = freqRank
     }
 
+    /// Nouns, verbs, and adjectives — good for building a short reading scene.
+    /// Skips pronouns, conjunctions, particles, and other glue.
+    public var isPassageFocusCandidate: Bool {
+        let tags = pos.lowercased()
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let primary = tags.first else { return false }
+        return primary == "s" || primary == "v" || primary == "adj" || primary == "adjg"
+    }
+
     private enum CodingKeys: String, CodingKey {
         case lemma, cefr, pos, freqRank
     }
