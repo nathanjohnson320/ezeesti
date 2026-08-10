@@ -7,8 +7,10 @@ Speak → Whisper transcribes → EstLLM explains the grammar "why" → hear the
 ## Requirements
 
 - macOS 14+, Xcode 16+, Apple Silicon
-- `cmake`, `git`, `python3.10`
 - ~7 GB free disk for models
+- `brew install cmake git python@3.10`
+
+Neurokõne needs Python 3.9–3.11 specifically — TensorFlow 2.13 publishes no wheels for 3.12+. A newer default `python3` will fail with `No matching distribution found for tensorflow`.
 
 ## Easy setup
 
