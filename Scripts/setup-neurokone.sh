@@ -9,13 +9,30 @@ VENV="$CACHE/neurokone-venv"
 MODELS_TTS="${EZEESTI_MODELS_DIR:-$HOME/Library/Application Support/Ezeesti/Models}/tts/multispeaker"
 BIN_DIR="${EZEESTI_MODELS_DIR:-$HOME/Library/Application Support/Ezeesti/Models}/bin"
 
+# TensorFlow 2.13 only ships wheels for CPython 3.9–3.11, so a newer default
+# python3 fails with a confusing "no matching distribution" error.
 PYTHON_BIN="${NEUROKONE_PYTHON:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
-  if command -v python3.10 >/dev/null 2>&1; then
-    PYTHON_BIN="$(command -v python3.10)"
-  else
-    PYTHON_BIN="$(command -v python3)"
-  fi
+  for candidate in python3.10 python3.11 python3.9; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      PYTHON_BIN="$(command -v "$candidate")"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "No compatible Python found (need 3.9–3.11, 3.10 recommended)."
+  echo "Install with: brew install python@3.10"
+  echo "Or point at an existing one: NEUROKONE_PYTHON=/path/to/python3.10 $0"
+  exit 1
+fi
+
+PY_MINOR="$("$PYTHON_BIN" -c 'import sys; print(sys.version_info[1])')"
+if [[ "$("$PYTHON_BIN" -c 'import sys; print(sys.version_info[0])')" != "3" || "$PY_MINOR" -lt 9 || "$PY_MINOR" -gt 11 ]]; then
+  echo "$PYTHON_BIN is $("$PYTHON_BIN" --version), but Neurokõne needs Python 3.9–3.11 (TensorFlow 2.13 has no wheels beyond 3.11)."
+  echo "Install with: brew install python@3.10"
+  exit 1
 fi
 
 echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN --version))"
@@ -34,6 +51,15 @@ fi
 
 mkdir -p "$WORKER/models" "$BIN_DIR"
 ln -sfn "$MODELS_TTS" "$WORKER/models/multispeaker"
+
+if [[ -d "$VENV" ]]; then
+  VENV_VER="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)"
+  WANT_VER="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+  if [[ "$VENV_VER" != "$WANT_VER" ]]; then
+    echo "==> Existing venv is Python $VENV_VER, need $WANT_VER — recreating"
+    rm -rf "$VENV"
+  fi
+fi
 
 if [[ ! -d "$VENV" ]]; then
   echo "==> Creating venv at $VENV"

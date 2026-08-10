@@ -95,7 +95,7 @@ fi
 build_whisper() {
   local src="$CACHE_DIR/whisper.cpp"
   if [[ ! -d "$src/.git" ]]; then
-    git clone --depth 1 --branch v1.9.1 "$WHISPER_REPO" "$src" || git clone --depth 1 "$WHISPER_REPO" "$src"
+    git clone --depth 1 --branch v1.9.2 "$WHISPER_REPO" "$src" || git clone --depth 1 "$WHISPER_REPO" "$src"
   fi
   cmake -S "$src" -B "$src/build" \
     -DCMAKE_BUILD_TYPE=Release \
