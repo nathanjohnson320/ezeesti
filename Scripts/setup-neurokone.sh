@@ -119,7 +119,17 @@ exec python "\$ROOT/Scripts/neurokone_synthesize.py" "\$@"
 EOF
 chmod +x "$WRAPPER" "$ROOT/Scripts/neurokone_synthesize.py"
 
+SMOKE_OUT="$(mktemp "${TMPDIR:-/tmp}/ezeesti-neurokone.XXXXXX.wav")"
+trap 'rm -f "$SMOKE_OUT"' EXIT
+echo "==> Verifying Neurokõne synthesis"
+if ! "$WRAPPER" --text "Tere!" --out "$SMOKE_OUT"; then
+  echo "Setup failed: Neurokõne could not synthesize speech" >&2
+  exit 1
+fi
+if [[ ! -s "$SMOKE_OUT" ]]; then
+  echo "Setup failed: Neurokõne produced no audio" >&2
+  exit 1
+fi
+
 echo
 echo "✓ Neurokõne ready: $WRAPPER"
-echo "Smoke test:"
-echo "  \"$WRAPPER\" --text 'Tere!' --out /tmp/ezeesti-nk.wav"

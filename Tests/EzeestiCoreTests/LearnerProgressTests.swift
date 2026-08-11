@@ -39,47 +39,6 @@ final class LearnerProgressTests: XCTestCase {
         XCTAssertEqual(WordGlossCatalog.gloss(forSurface: "Joon"), "I drink")
     }
 
-    func testRecommendPrefersWorkingLevel() {
-        let texts = [
-            GradedText(id: "a1", title: "A1", cefr: .a1, body: "Ma joon kohvi.", glossEnglish: "I drink coffee."),
-            GradedText(id: "a2", title: "A2", cefr: .a2, body: "Homme ma lähen linna.", glossEnglish: "Tomorrow I go to town."),
-        ]
-        let pick = LearnerProgress.recommendText(
-            from: texts,
-            workingLevel: .a1,
-            knownLemmas: ["ma"]
-        )
-        XCTAssertEqual(pick?.id, "a1")
-    }
-
-    func testShouldGenerateWhenTextsTooFamiliar() {
-        let texts = [
-            GradedText(
-                id: "easy",
-                title: "Easy",
-                cefr: .a1,
-                body: "Ma joon kohvi.",
-                glossEnglish: "I drink coffee.",
-                focusWords: ["joon"]
-            ),
-        ]
-        let known: Set<String> = ["ma", "joon", "kohvi"]
-        XCTAssertTrue(
-            LearnerProgress.shouldGenerateNewText(
-                from: texts,
-                workingLevel: .a1,
-                knownLemmas: known
-            )
-        )
-        XCTAssertFalse(
-            LearnerProgress.shouldGenerateNewText(
-                from: texts,
-                workingLevel: .a1,
-                knownLemmas: ["ma"]
-            )
-        )
-    }
-
     func testTargetLemmasPreferUnknownHighFrequency() {
         LexiconCatalog.shared.loadBundledIfNeeded()
         let targets = LearnerProgress.targetLemmasForPassage(

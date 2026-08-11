@@ -6,42 +6,88 @@ import EzeestiLearning
 
 public struct RootView: View {
     @Environment(\.modelContext) private var modelContext
-    @StateObject private var tutor = TutorEngine()
-    @StateObject private var learningHolder = LearningHolder()
+    @StateObject private var engines = EngineHolder()
 
     public init() {}
 
     public var body: some View {
         Group {
-            if tutor.isWarmupFinished {
-                if let learning = learningHolder.engine {
+            switch SetupPresentation.screen(
+                setupError: engines.setupError,
+                hasTutor: engines.tutor != nil,
+                holderReady: engines.isReady,
+                hasLearning: engines.learning != nil
+            ) {
+            case .failed(let message):
+                VStack(spacing: 12) {
+                    Text("Setup failed")
+                        .font(.title.bold())
+                    Text(message)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                    Text("Run the setup commands in README.md, then relaunch Ezeesti.")
+                        .font(.callout)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
+            case .session:
+                if let learning = engines.learning {
                     LearningSessionView(learning: learning)
                 } else {
-                    ProgressView("Loading…")
+                    ProgressView("Checking setup…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                WarmupView(engine: tutor)
+            case .warming:
+                if let tutor = engines.tutor {
+                    WarmupView(engine: tutor)
+                } else {
+                    ProgressView("Checking setup…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            case .checking:
+                ProgressView("Checking setup…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .task {
-            if learningHolder.engine == nil {
+            guard !engines.didStart else { return }
+            engines.didStart = true
+            do {
+                let tutor = try TutorEngine()
                 let store = VocabStore(modelContext: modelContext)
-                learningHolder.attach(LearningEngine(vocab: store))
+                let learning = try LearningEngine(vocab: store)
+                engines.attach(tutor: tutor, learning: learning)
+                learning.bootstrap()
+                try await tutor.warmupModels()
+                engines.markReady()
+            } catch {
+                engines.fail(error)
             }
-            learningHolder.engine?.bootstrap()
-            // Primes Metal/Whisper/EstLLM paths used by Learn as well.
-            await tutor.warmupModels()
         }
     }
 }
 
 @MainActor
-final class LearningHolder: ObservableObject {
-    @Published var engine: LearningEngine?
+final class EngineHolder: ObservableObject {
+    @Published var tutor: TutorEngine?
+    @Published var learning: LearningEngine?
+    @Published var setupError: String?
+    /// Mirrors the tutor's warmup completion: nested ObservableObjects do not
+    /// propagate their changes to a parent view observing only this holder.
+    @Published var isReady = false
+    var didStart = false
 
-    func attach(_ engine: LearningEngine) {
-        self.engine = engine
+    func attach(tutor: TutorEngine, learning: LearningEngine) {
+        self.tutor = tutor
+        self.learning = learning
+    }
+
+    func markReady() {
+        isReady = true
+    }
+
+    func fail(_ error: Error) {
+        setupError = error.localizedDescription
     }
 }
 
@@ -422,7 +468,6 @@ private struct WordInspectorView: View {
     private func sourceLabel(_ source: String) -> String {
         switch source {
         case "estllm": return "gloss · EstLLM"
-        case "fallback": return "gloss · offline fallback"
         case "cache": return "gloss · saved"
         default: return "gloss · \(source)"
         }

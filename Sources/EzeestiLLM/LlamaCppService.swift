@@ -38,11 +38,21 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         shutdown()
     }
 
-    public func complete(system: String, user: String, maxTokens: Int = 160) async throws -> String {
+    public func complete(
+        system: String,
+        user: String,
+        maxTokens: Int = 160,
+        temperature: Double? = nil
+    ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let text = try self.completeSync(system: system, user: user, maxTokens: maxTokens)
+                    let text = try self.completeSync(
+                        system: system,
+                        user: user,
+                        maxTokens: maxTokens,
+                        temperature: temperature ?? self.temperature
+                    )
                     continuation.resume(returning: text)
                 } catch {
                     continuation.resume(throwing: error)
@@ -102,7 +112,12 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         }
     }
 
-    private func completeSync(system: String, user: String, maxTokens: Int) throws -> String {
+    private func completeSync(
+        system: String,
+        user: String,
+        maxTokens: Int,
+        temperature: Double
+    ) throws -> String {
         try ensureSymbols()
 
         let prompt = """

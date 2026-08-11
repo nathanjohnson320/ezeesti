@@ -69,39 +69,6 @@ public final class VocabCard {
         set { familiarityRaw = newValue.rawValue }
     }
 
-    public var fsrsState: FSRSState {
-        get { FSRSState(rawValue: stateRaw) ?? .new }
-        set { stateRaw = newValue.rawValue }
-    }
-
-    public var fsrsCard: FSRSCard {
-        get {
-            FSRSCard(
-                stability: stability,
-                difficulty: difficulty,
-                elapsedDays: elapsedDays,
-                scheduledDays: scheduledDays,
-                reps: reps,
-                lapses: lapses,
-                state: fsrsState,
-                due: due,
-                lastReview: lastReview
-            )
-        }
-        set {
-            stability = newValue.stability
-            difficulty = newValue.difficulty
-            elapsedDays = newValue.elapsedDays
-            scheduledDays = newValue.scheduledDays
-            reps = newValue.reps
-            lapses = newValue.lapses
-            fsrsState = newValue.state
-            due = newValue.due
-            lastReview = newValue.lastReview
-            updatedAt = Date()
-        }
-    }
-
     public init(
         lemma: String,
         surfaceForm: String,
@@ -400,16 +367,6 @@ public final class VocabStore: ObservableObject {
         card.scheduledDays = next
         card.due = ExponentialBackoff.dueDate(from: now, intervalDays: next)
         card.reps += 1
-        card.lastReview = now
-        card.updatedAt = now
-        try modelContext.save()
-    }
-
-    public func recordReviewFailure(_ card: VocabCard, now: Date = Date()) throws {
-        card.familiarity = .learning
-        card.scheduledDays = ExponentialBackoff.initialIntervalDays
-        card.due = now
-        card.lapses += 1
         card.lastReview = now
         card.updatedAt = now
         try modelContext.save()

@@ -64,5 +64,9 @@ let package = Package(
             name: "EzeestiLLMTests",
             dependencies: ["EzeestiLLM", "EzeestiCore"]
         ),
+        .testTarget(
+            name: "EzeestiUITests",
+            dependencies: ["EzeestiUI"]
+        ),
     ]
 )

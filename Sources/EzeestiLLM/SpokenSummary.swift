@@ -79,14 +79,6 @@ public struct SpokenSummaryFeedback: Codable, Sendable, Hashable {
         self.missingRequiredWords = missingRequiredWords
     }
 
-    public var asTutorFeedback: TutorFeedback {
-        TutorFeedback(
-            verdict: verdict,
-            correction: correction,
-            explanation: explanation,
-            retryPrompt: retryPrompt
-        )
-    }
 }
 
 public enum SpokenSummaryFeedbackParser {
@@ -139,9 +131,8 @@ public enum SpokenSummaryFeedbackParser {
     ) -> SpokenSummaryFeedback {
         let mismatches = likelyMismatches(sourceBody: sourceBody, transcript: transcript)
         let coverage = requiredCoverage(mustUse: mustUse, transcript: transcript, mismatches: mismatches)
-        let modelAnswer = sourceBody.isEmpty
-            ? "Proovi öelda midagi nende sõnadega: \(mustUse.joined(separator: ", "))."
-            : sourceBody
+        // Correction is the real target sentence — never invent canned Estonian.
+        let modelAnswer = sourceBody
 
         let fidelity = contentFidelity(sourceBody: sourceBody, transcript: transcript)
         let explanation = buildExplanation(

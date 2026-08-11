@@ -91,46 +91,6 @@ public struct LearnerProgress: Sendable, Equatable {
         )
     }
 
-    public static func recommendText(
-        from texts: [GradedText],
-        workingLevel: CEFRLevel,
-        knownLemmas: Set<String>
-    ) -> GradedText? {
-        guard !texts.isEmpty else { return nil }
-
-        func score(_ text: GradedText) -> Double {
-            let report = GradedTextCatalog.familiarity(text: text, knownLemmas: knownLemmas)
-            let known = report.knownRatio
-            // Prefer readable-but-stretch texts (~70–92% known).
-            let sweet: Double
-            if known < 0.55 { sweet = known }
-            else if known > 0.95 { sweet = 0.2 }
-            else { sweet = 1.0 - abs(known - 0.85) }
-
-            let levelBonus: Double
-            if text.cefr == workingLevel { levelBonus = 1.0 }
-            else if text.cefr.rawValue < workingLevel.rawValue { levelBonus = 0.4 }
-            else { levelBonus = 0.6 }
-            return sweet * 2 + levelBonus
-        }
-
-        return texts.max(by: { score($0) < score($1) })
-    }
-
-    /// True when the best available text is already too familiar — time to generate a new one.
-    public static func shouldGenerateNewText(
-        from texts: [GradedText],
-        workingLevel: CEFRLevel,
-        knownLemmas: Set<String>,
-        exhaustedKnownRatio: Double = 0.90
-    ) -> Bool {
-        guard let best = recommendText(from: texts, workingLevel: workingLevel, knownLemmas: knownLemmas) else {
-            return true
-        }
-        let report = GradedTextCatalog.familiarity(text: best, knownLemmas: knownLemmas)
-        return report.knownRatio >= exhaustedKnownRatio
-    }
-
     /// Pick one teachable lemma for the next read-aloud sentence.
     /// Prefers a due word first, then already-learning, then an unknown high-frequency content word.
     public static func targetLemmasForPassage(
@@ -182,8 +142,8 @@ public struct LearnerProgress: Sendable, Equatable {
                 if pickedKeys.contains(key) { return false }
                 // Due known words are already handled above; skip other known lemmas.
                 if knownLemmas.contains(key) { return false }
-                // Skip ultra-short glue already in seed (ma, ja, on…) unless learning.
-                if GradedTextCatalog.fallbackSeed.contains(key), !learningLemmas.contains(key) {
+                // Skip ultra-short glue words (ma, ja, on…) unless learning.
+                if GradedTextCatalog.baselineFunctionWords.contains(key), !learningLemmas.contains(key) {
                     return false
                 }
                 // Prefer content words; allow function words only if already learning them.
@@ -219,15 +179,5 @@ public struct LearnerProgress: Sendable, Equatable {
         }
 
         return picked
-    }
-
-    public static func focusLemmas(in texts: [GradedText]) -> Set<String> {
-        var set = Set<String>()
-        for text in texts {
-            for word in text.focusWords {
-                set.insert(EstonianTokenizer.normalize(word))
-            }
-        }
-        return set
     }
 }

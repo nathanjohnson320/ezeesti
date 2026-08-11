@@ -53,52 +53,6 @@ final class PassageGenerationParserTests: XCTestCase {
         XCTAssertNil(text)
     }
 
-    func testHeuristicIncludesFocusWord() {
-        let text = PassageGenerationParser.heuristic(
-            requiredFocus: ["isa", "ema"],
-            cefr: .a1,
-            glosses: ["isa": "father", "ema": "mother"]
-        )
-        XCTAssertTrue(text.isGenerated)
-        XCTAssertEqual(text.focusWords, ["isa"])
-        XCTAssertTrue(text.body.contains("isa"))
-        XCTAssertGreaterThanOrEqual(
-            EstonianTokenizer.tokenize(text.body).filter(\.isWord).count,
-            6
-        )
-        XCTAssertFalse(text.body.lowercased().contains("õpin uusi"))
-        XCTAssertFalse(text.body.lowercased().contains("ma ütlen:"))
-    }
-
-    func testHeuristicBuildsSentenceForSingleNoun() {
-        let text = PassageGenerationParser.heuristic(
-            requiredFocus: ["raha"],
-            cefr: .a1,
-            glosses: ["raha": "money"]
-        )
-        XCTAssertTrue(text.body.contains("raha"))
-        XCTAssertTrue(text.glossEnglish.lowercased().contains("money"))
-        XCTAssertEqual(
-            text.body.split { ".!?".contains($0) }.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count,
-            1
-        )
-        XCTAssertGreaterThanOrEqual(
-            EstonianTokenizer.tokenize(text.body).filter(\.isWord).count,
-            6
-        )
-    }
-
-    func testHeuristicUsesNaturalFrameForFunctionWord() {
-        let text = PassageGenerationParser.heuristic(
-            requiredFocus: ["kes"],
-            cefr: .a1,
-            glosses: ["kes": "who"]
-        )
-        XCTAssertEqual(text.focusWords, ["kes"])
-        XCTAssertEqual(text.body, "Kes see mees seal ukse juures on?")
-        XCTAssertTrue(text.glossEnglish.lowercased().contains("who"))
-    }
-
     func testRejectsMetaWordListPassage() {
         let raw = """
         {"title":"Uued sõnad","body":"Täna ma õpin uusi sõnu.","glossEnglish":"Today I learn new words.","focusWords":["isa"]}

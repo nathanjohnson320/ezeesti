@@ -40,36 +40,4 @@ final class SentenceValidationParserTests: XCTestCase {
         XCTAssertNil(text)
     }
 
-    func testHeuristicKeepsUsableDraft() {
-        let draft = PassageDraft(
-            title: "Isa",
-            body: "Mul on isa kodus ja ta loeb ajalehte.",
-            glossEnglish: "I have a father at home and he reads the newspaper.",
-            focusWords: ["isa"]
-        )
-        let text = SentenceValidationParser.heuristic(
-            draft: draft,
-            requiredFocus: ["isa"],
-            cefr: .a1,
-            glosses: ["isa": "father"]
-        )
-        XCTAssertEqual(text.body, "Mul on isa kodus ja ta loeb ajalehte.")
-    }
-
-    func testHeuristicReplacesUnusableDraft() {
-        let draft = PassageDraft(
-            title: "Bad",
-            body: "Mul on kes , kuidas ja ka .",
-            glossEnglish: "I have who, how and also.",
-            focusWords: ["kes"]
-        )
-        let text = SentenceValidationParser.heuristic(
-            draft: draft,
-            requiredFocus: ["kes"],
-            cefr: .a1,
-            glosses: ["kes": "who"]
-        )
-        XCTAssertEqual(text.body, "Kes see mees seal ukse juures on?")
-        XCTAssertEqual(text.focusWords, ["kes"])
-    }
 }

@@ -7,6 +7,7 @@ MODELS_DIR="${EZEESTI_MODELS_DIR:-$HOME/Library/Application Support/Ezeesti/Mode
 VENDOR_DIR="${EZEESTI_VENDOR_DIR:-$ROOT/Vendor/native}"
 CACHE_DIR="${EZEESTI_CACHE_DIR:-$ROOT/.cache}"
 WHISPER_REPO="${WHISPER_REPO:-https://github.com/ggml-org/whisper.cpp.git}"
+WHISPER_TAG="${WHISPER_TAG:-v1.9.2}"
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
 
 WHISPER_HF="https://huggingface.co/TalTechNLP/whisper-large-v3-turbo-et-verbatim-2604/resolve/main/ggml/ggml-model.bin"
@@ -95,7 +96,13 @@ fi
 build_whisper() {
   local src="$CACHE_DIR/whisper.cpp"
   if [[ ! -d "$src/.git" ]]; then
-    git clone --depth 1 --branch v1.9.2 "$WHISPER_REPO" "$src" || git clone --depth 1 "$WHISPER_REPO" "$src"
+    git clone --depth 1 --branch "$WHISPER_TAG" "$WHISPER_REPO" "$src" || git clone --depth 1 "$WHISPER_REPO" "$src"
+  elif [[ "$(git -C "$src" describe --tags 2>/dev/null)" != "$WHISPER_TAG" ]]; then
+    # Cached checkout is on an older tag; move it forward instead of silently reusing it.
+    echo "==> Updating cached whisper.cpp to $WHISPER_TAG"
+    git -C "$src" fetch --depth 1 origin tag "$WHISPER_TAG" --no-tags
+    git -C "$src" checkout -q "$WHISPER_TAG"
+    rm -rf "$src/build"
   fi
   cmake -S "$src" -B "$src/build" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -203,6 +210,23 @@ if [[ "${SKIP_BUILD_BINARIES:-0}" != "1" ]]; then
 else
   echo "==> Skipping binary builds (SKIP_BUILD_BINARIES=1)"
 fi
+
+required_files=(
+  "$MODELS_DIR/whisper/ggml-model.bin"
+  "$MODELS_DIR/llm/Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"
+)
+if [[ "${SKIP_BUILD_BINARIES:-0}" != "1" ]]; then
+  required_files+=(
+    "$MODELS_DIR/native/whisper/lib/libEzeestiWhisper.dylib"
+    "$MODELS_DIR/native/llama/lib/libEzeestiLlama.dylib"
+  )
+fi
+for required in "${required_files[@]}"; do
+  if [[ ! -s "$required" ]]; then
+    echo "Setup failed: required file missing or empty: $required" >&2
+    exit 1
+  fi
+done
 
 echo
 echo "Done. Model root: $MODELS_DIR"

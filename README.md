@@ -52,17 +52,18 @@ The lexicon is a dictionary catalog, not "known" vocabulary — your known % sti
 ```
 App/                 SwiftUI macOS entry
 Sources/
-  EzeestiCore/       lessons, CEFR, model paths
+  EzeestiCore/       CEFR, lexicon, model paths, lesson packs
   EzeestiASR/        mic + in-process Whisper (dlopen)
   EzeestiLLM/        EstLLM prompts + in-process llama.cpp (dlopen)
-  EzeestiTTS/        system voice (+ Neurokõne CLI)
-  EzeestiTutor/      speak → analyze → retry engine
-  EzeestiUI/         lesson list + practice screen
+  EzeestiTTS/        Neurokõne CLI
+  EzeestiLearning/   vocab store + Learn session engine
+  EzeestiTutor/      model warmup (+ unused drill engine for later)
+  EzeestiUI/         Learn UI
 Native/              C bridges compiled into libEzeesti*.dylib by fetch-models.sh
 Scripts/             model, lexicon, gloss, and TTS setup
 ```
 
-ASR and the tutor LLM run **in-process** via Metal-backed dylibs (`libEzeestiWhisper` / `libEzeestiLlama`), each `dlopen`ed with `RTLD_LOCAL` so they keep separate ggml copies. Weights stay on disk in Application Support. Neurokõne TTS runs as a Python CLI for now.
+ASR and the tutor LLM run **in-process** via Metal-backed dylibs (`libEzeestiWhisper` / `libEzeestiLlama`), each `dlopen`ed with `RTLD_LOCAL` so they keep separate ggml copies. Weights stay on disk in Application Support. Neurokõne TTS runs as a Python CLI.
 
 ## License notes
 

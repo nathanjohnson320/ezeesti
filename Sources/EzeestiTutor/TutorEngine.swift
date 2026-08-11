@@ -23,7 +23,6 @@ public final class TutorEngine: ObservableObject {
         case loadingWhisper
         case loadingTutor
         case ready
-        case skipped
     }
 
     @Published public private(set) var phase: Phase = .idle
@@ -34,13 +33,8 @@ public final class TutorEngine: ObservableObject {
     @Published public private(set) var itemIndex: Int = 0
     @Published public private(set) var lastTranscript: String = ""
     @Published public private(set) var lastFeedback: TutorFeedback?
-    @Published public private(set) var useMockASR: Bool = true
-    @Published public private(set) var useRuleTutor: Bool = true
-    @Published public private(set) var hasEstonianTTS: Bool = false
-    @Published public private(set) var ttsVoiceName: String? = nil
-
     public var isWarmupFinished: Bool {
-        warmupState == .ready || warmupState == .skipped
+        warmupState == .ready
     }
 
     public let recorder: MicrophoneRecorder
@@ -62,31 +56,30 @@ public final class TutorEngine: ObservableObject {
         recognizer: (any SpeechRecognizing)? = nil,
         languageModel: (any LanguageModeling)? = nil,
         speaker: (any TextSpeaking)? = nil
-    ) {
-        let paths = modelPaths ?? ((try? ModelPaths.defaultApplicationSupport()) ?? ModelPaths())
+    ) throws {
+        let paths: ModelPaths
+        if let modelPaths {
+            paths = modelPaths
+        } else {
+            paths = try ModelPaths.defaultApplicationSupport()
+        }
         self.modelPaths = paths
         self.recorder = recorder ?? MicrophoneRecorder()
 
         if let recognizer {
             self.recognizer = recognizer
-            self.useMockASR = false
         } else if paths.whisperNativeReady, let model = paths.whisperGGML, let lib = paths.whisperLibDir {
             self.recognizer = WhisperCppService(modelPath: model, libDir: lib)
-            self.useMockASR = false
         } else {
-            self.recognizer = MockSpeechRecognizer()
-            self.useMockASR = true
+            throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
         }
 
         if let languageModel {
             self.languageModel = languageModel
-            self.useRuleTutor = false
         } else if paths.llamaNativeReady, let model = paths.estLLMGGUF, let lib = paths.llamaLibDir {
             self.languageModel = LlamaCppService(modelPath: model, libDir: lib)
-            self.useRuleTutor = false
         } else {
-            self.languageModel = RuleBasedLanguageModel()
-            self.useRuleTutor = true
+            throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
         }
 
         if let speaker {
@@ -95,19 +88,7 @@ public final class TutorEngine: ObservableObject {
                   FileManager.default.isExecutableFile(atPath: cli.path) {
             self.speaker = NeurokoneTTSService(binaryPath: cli)
         } else {
-            self.speaker = SystemSpeechSynthesizer()
-        }
-
-        switch VoiceAvailability.current(neurokoneCLI: paths.neurokoneBinary) {
-        case .neurokoneCLI:
-            self.hasEstonianTTS = true
-            self.ttsVoiceName = "Neurokõne (mari)"
-        case .estonianSystemVoice(let name):
-            self.hasEstonianTTS = true
-            self.ttsVoiceName = name
-        case .unavailable:
-            self.hasEstonianTTS = false
-            self.ttsVoiceName = nil
+            throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
         }
 
         // Free Metal-backed models before process teardown (avoids ggml residency-set assert).
@@ -146,50 +127,27 @@ public final class TutorEngine: ObservableObject {
                 itemIndex = 0
             }
         } catch {
-            packs = [LessonCatalog.fallbackMinemaLesson]
-            selectedPack = packs.first
             phase = .error(error.localizedDescription)
         }
     }
 
     /// Preload Whisper (kept warm) and prime EstLLM (load then unload) before practice.
-    public func warmupModels() async {
-        if useMockASR, useRuleTutor {
-            warmupDetail = "Using mock models"
-            warmupState = .skipped
-            return
-        }
-
-        if !useMockASR, let whisper = recognizer as? WhisperCppService {
+    public func warmupModels() async throws {
+        if let whisper = recognizer as? WhisperCppService {
             warmupState = .loadingWhisper
             warmupDetail = "Loading Whisper on GPU…"
-            do {
-                try await whisper.warmup()
-            } catch {
-                warmupDetail = "Whisper warmup failed — first recording may be slow"
-                // Continue; practice can still cold-start.
-            }
+            try await whisper.warmup()
         }
 
-        if !useRuleTutor, let llama = languageModel as? LlamaCppService {
+        if let llama = languageModel as? LlamaCppService {
             warmupState = .loadingTutor
             warmupDetail = "Priming EstLLM…"
-            do {
-                try await llama.warmup()
-            } catch {
-                warmupDetail = "EstLLM warmup failed — first check may be slow"
-            }
+            try await llama.warmup()
         }
 
-        if speaker is NeurokoneTTSService {
-            warmupState = .loadingTutor
-            warmupDetail = "Loading Neurokõne voice (once)…"
-            do {
-                try await speaker.prepare()
-            } catch {
-                warmupDetail = "Neurokõne warmup failed — first Hear may be slow"
-            }
-        }
+        warmupState = .loadingTutor
+        warmupDetail = "Loading Neurokõne voice (once)…"
+        try await speaker.prepare()
 
         warmupDetail = "Ready"
         warmupState = .ready
@@ -232,16 +190,8 @@ public final class TutorEngine: ObservableObject {
             phase = .tutoring
             let prompt = GrammarTutorPrompt(target: item, pack: pack, transcript: transcript.text)
 
-            let feedback: TutorFeedback
-            do {
-                let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
-                feedback = try TutorFeedbackParser.parse(raw)
-            } catch {
-                // Fall back to fast rules if EstLLM OOMs / crashes (common after Neurokõne).
-                let fallback = RuleBasedLanguageModel()
-                let raw = try await fallback.complete(system: prompt.system, user: prompt.user)
-                feedback = try TutorFeedbackParser.parse(raw)
-            }
+            let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
+            let feedback = try TutorFeedbackParser.parse(raw)
 
             lastFeedback = feedback
             // Do NOT auto-play Neurokõne here — loading TF+vocoder while Whisper is warm

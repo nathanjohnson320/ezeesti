@@ -36,7 +36,6 @@ public final class LearningEngine: ObservableObject {
     @Published public private(set) var lastTranscript: String = ""
     @Published public private(set) var lastSummaryFeedback: SpokenSummaryFeedback?
     @Published public private(set) var speakPrompt: String = ""
-    @Published public private(set) var lexiconCount: Int = 0
     @Published public private(set) var isSpeakingCorrection: Bool = false
     @Published public private(set) var speakingDetail: String = ""
     @Published public private(set) var lastASRError: String?
@@ -61,18 +60,23 @@ public final class LearningEngine: ObservableObject {
         languageModel: (any LanguageModeling)? = nil,
         speaker: (any TextSpeaking)? = nil,
         modelPaths: ModelPaths? = nil
-    ) {
+    ) throws {
         self.vocab = vocab
         self.recorder = recorder ?? MicrophoneRecorder()
 
-        let paths = modelPaths ?? ((try? ModelPaths.defaultApplicationSupport()) ?? ModelPaths())
+        let paths: ModelPaths
+        if let modelPaths {
+            paths = modelPaths
+        } else {
+            paths = try ModelPaths.defaultApplicationSupport()
+        }
 
         if let recognizer {
             self.recognizer = recognizer
         } else if paths.whisperNativeReady, let model = paths.whisperGGML, let lib = paths.whisperLibDir {
             self.recognizer = WhisperCppService(modelPath: model, libDir: lib)
         } else {
-            self.recognizer = MockSpeechRecognizer(cannedText: "Ma joon kohvi ja lähen poodi.")
+            throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
         }
 
         if let languageModel {
@@ -80,7 +84,7 @@ public final class LearningEngine: ObservableObject {
         } else if paths.llamaNativeReady, let model = paths.estLLMGGUF, let lib = paths.llamaLibDir {
             self.languageModel = LlamaCppService(modelPath: model, libDir: lib)
         } else {
-            self.languageModel = RuleBasedLanguageModel()
+            throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
         }
 
         if let speaker {
@@ -89,7 +93,7 @@ public final class LearningEngine: ObservableObject {
                   FileManager.default.isExecutableFile(atPath: cli.path) {
             self.speaker = NeurokoneTTSService(binaryPath: cli)
         } else {
-            self.speaker = SystemSpeechSynthesizer()
+            throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
         }
     }
 
@@ -97,8 +101,7 @@ public final class LearningEngine: ObservableObject {
         do {
             LexiconCatalog.shared.loadBundledIfNeeded()
             WordGlossCatalog.loadBundledIfNeeded()
-            let seeded = try vocab.seedLexiconFromBundleIfNeeded()
-            lexiconCount = (try? vocab.lexiconCount()) ?? seeded
+            _ = try vocab.seedLexiconFromBundleIfNeeded()
             try vocab.clearAssumedSeedVocabularyIfNeeded()
             refreshProgress()
             if selectedText == nil {
@@ -114,10 +117,6 @@ public final class LearningEngine: ObservableObject {
         progress = (try? vocab.progressSnapshot()) ?? .empty
         dueCount = progress.dueCount
         duePreview = (try? vocab.dueCards(limit: 8)) ?? []
-    }
-
-    public func refreshDueCount() {
-        refreshProgress()
     }
 
     /// Draft a fresh sentence from the next unknown / due lemmas.
@@ -204,23 +203,11 @@ public final class LearningEngine: ObservableObject {
                 focusGlosses: glosses
             )
 
-            var draft: GradedText
-            do {
-                let raw = try await languageModel.complete(
-                    system: prompt.system,
-                    user: prompt.user,
-                    maxTokens: 220
-                )
-                if Task.isCancelled { return }
-                draft = PassageGenerationParser.parse(raw, requiredFocus: focus, cefr: cefr)
-                    ?? PassageGenerationParser.heuristic(requiredFocus: focus, cefr: cefr, glosses: glosses)
-            } catch {
-                if Task.isCancelled { return }
-                draft = PassageGenerationParser.heuristic(requiredFocus: focus, cefr: cefr, glosses: glosses)
-            }
+            let draft = try await generatePassage(prompt: prompt, focus: focus, cefr: cefr)
+            if Task.isCancelled { return }
 
             generationDetail = "Checking the sentence…"
-            let text = await validateSentence(
+            let text = try await validateSentence(
                 draft,
                 focus: focus,
                 glosses: glosses,
@@ -238,13 +225,53 @@ public final class LearningEngine: ObservableObject {
         }
     }
 
+    /// A single low-temperature sample often trips one of the passage gates, so
+    /// resample at rising temperature before giving up on the model.
+    private func generatePassage(
+        prompt: PassageGenerationPrompt,
+        focus: [String],
+        cefr: CEFRLevel
+    ) async throws -> GradedText {
+        var lastError: Error?
+
+        for (attempt, temperature) in Self.passageRetryTemperatures.enumerated() {
+            if Task.isCancelled { throw CancellationError() }
+            if attempt > 0 {
+                generationDetail = "Rewriting the sentence (attempt \(attempt + 1))…"
+            }
+
+            do {
+                let raw = try await languageModel.complete(
+                    system: prompt.system,
+                    user: prompt.user,
+                    maxTokens: 220,
+                    temperature: temperature
+                )
+                if let draft = PassageGenerationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
+                    return draft
+                }
+            } catch {
+                lastError = error
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+        throw EzeestiError.llmFailed(
+            "EstLLM could not write a usable sentence for “\(focus.joined(separator: ", "))” after \(Self.passageRetryTemperatures.count) attempts"
+        )
+    }
+
+    private static let passageRetryTemperatures: [Double] = [0.2, 0.55, 0.85]
+
     /// Feed the draft back through the model; accept a rewrite if the draft is weak.
     private func validateSentence(
         _ draft: GradedText,
         focus: [String],
         glosses: [String: String],
         cefr: CEFRLevel
-    ) async -> GradedText {
+    ) async throws -> GradedText {
         let passageDraft = PassageDraft(
             title: draft.title,
             body: draft.body,
@@ -258,25 +285,14 @@ public final class LearningEngine: ObservableObject {
             draft: passageDraft
         )
 
-        do {
-            let raw = try await languageModel.complete(
-                system: prompt.system,
-                user: prompt.user,
-                maxTokens: 220
-            )
-            if let validated = SentenceValidationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
-                return validated
-            }
-        } catch {
-            // Fall through to offline validation.
-        }
-
-        return SentenceValidationParser.heuristic(
-            draft: passageDraft,
-            requiredFocus: focus,
-            cefr: cefr,
-            glosses: glosses
+        let raw = try await languageModel.complete(
+            system: prompt.system,
+            user: prompt.user,
+            maxTokens: 220
         )
+        // The draft already cleared the generation gates; an unusable review
+        // response means the reviewer failed, not the sentence.
+        return SentenceValidationParser.parse(raw, requiredFocus: focus, cefr: cefr) ?? draft
     }
 
     /// Wipe known/learning progress and draft a fresh first sentence.
@@ -374,7 +390,7 @@ public final class LearningEngine: ObservableObject {
         do {
             let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
             guard let gloss = WordGlossParser.parse(raw) else { return }
-            let source = (languageModel is RuleBasedLanguageModel) ? "fallback" : "estllm"
+            let source = "estllm"
             try vocab.saveGloss(forSurface: token.surface, glossEnglish: gloss, source: source)
             guard selectedTokenIndex == tokenIndex else { return }
             selectedWord = lookup(token: token, tokenIndex: tokenIndex)
@@ -452,22 +468,13 @@ public final class LearningEngine: ObservableObject {
                 transcript: said
             )
 
-            let feedback: SpokenSummaryFeedback
-            do {
-                let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
-                feedback = SpokenSummaryFeedbackParser.parse(
-                    raw,
-                    mustUse: focus,
-                    transcript: said,
-                    sourceBody: text.body
-                )
-            } catch {
-                feedback = SpokenSummaryFeedbackParser.heuristic(
-                    mustUse: focus,
-                    transcript: said,
-                    sourceBody: text.body
-                )
-            }
+            let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
+            let feedback = SpokenSummaryFeedbackParser.parse(
+                raw,
+                mustUse: focus,
+                transcript: said,
+                sourceBody: text.body
+            )
 
             lastSummaryFeedback = feedback
             try applyVocabOutcome(feedback: feedback, text: text)
@@ -477,7 +484,7 @@ public final class LearningEngine: ObservableObject {
         } catch {
             lastASRError = error.localizedDescription
             lastTranscript = ""
-            phase = .speakingSummary
+            phase = .error(error.localizedDescription)
         }
     }
 

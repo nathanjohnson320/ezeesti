@@ -93,14 +93,6 @@ public struct SentenceValidationResult: Codable, Sendable, Equatable {
         self.reason = reason
     }
 
-    public var asDraft: PassageDraft {
-        PassageDraft(
-            title: title,
-            body: body,
-            glossEnglish: glossEnglish,
-            focusWords: focusWords
-        )
-    }
 }
 
 public enum SentenceValidationParser {
@@ -121,23 +113,6 @@ public enum SentenceValidationParser {
             encode(draft),
             requiredFocus: requiredFocus,
             cefr: cefr
-        )
-    }
-
-    /// Offline check: keep draft if usable; otherwise replace with heuristic.
-    public static func heuristic(
-        draft: PassageDraft,
-        requiredFocus: [String],
-        cefr: CEFRLevel,
-        glosses: [String: String] = [:]
-    ) -> GradedText {
-        if let kept = PassageGenerationParser.parse(encode(draft), requiredFocus: requiredFocus, cefr: cefr) {
-            return kept
-        }
-        return PassageGenerationParser.heuristic(
-            requiredFocus: requiredFocus,
-            cefr: cefr,
-            glosses: glosses
         )
     }
 

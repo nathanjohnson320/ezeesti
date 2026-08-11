@@ -2,12 +2,23 @@ import Foundation
 import EzeestiCore
 
 public protocol LanguageModeling: Sendable {
-    func complete(system: String, user: String, maxTokens: Int) async throws -> String
+    /// - Parameter temperature: Overrides the model default; used to resample
+    ///   when a first, low-temperature draft fails validation.
+    func complete(
+        system: String,
+        user: String,
+        maxTokens: Int,
+        temperature: Double?
+    ) async throws -> String
 }
 
 public extension LanguageModeling {
+    func complete(system: String, user: String, maxTokens: Int) async throws -> String {
+        try await complete(system: system, user: user, maxTokens: maxTokens, temperature: nil)
+    }
+
     func complete(system: String, user: String) async throws -> String {
-        try await complete(system: system, user: user, maxTokens: 160)
+        try await complete(system: system, user: user, maxTokens: 160, temperature: nil)
     }
 }
 

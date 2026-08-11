@@ -13,41 +13,6 @@ extension TextSpeaking {
     public func prepare() async throws {}
 }
 
-public enum VoiceAvailability: Sendable {
-    case neurokoneCLI
-    case estonianSystemVoice(name: String)
-    case unavailable
-
-    public static func current(neurokoneCLI: URL? = nil) -> VoiceAvailability {
-        if let cli = neurokoneCLI ?? defaultNeurokoneCLI(),
-           FileManager.default.isExecutableFile(atPath: cli.path) {
-            return .neurokoneCLI
-        }
-        if let voice = EstonianVoice.bestAvailable() {
-            return .estonianSystemVoice(name: voice.name)
-        }
-        return .unavailable
-    }
-
-    public static func defaultNeurokoneCLI() -> URL? {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Ezeesti/Models/bin/neurokone-cli")
-        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
-    }
-}
-
-enum EstonianVoice {
-    static func bestAvailable() -> AVSpeechSynthesisVoice? {
-        let voices = AVSpeechSynthesisVoice.speechVoices().filter {
-            let lang = $0.language.lowercased()
-            return lang == "et" || lang.hasPrefix("et-")
-        }
-        return voices.max(by: { $0.quality.rawValue < $1.quality.rawValue })
-            ?? AVSpeechSynthesisVoice(language: "et-EE")
-            ?? AVSpeechSynthesisVoice(language: "et")
-    }
-}
-
 /// Keeps one Neurokõne Python process alive so TensorFlow/HiFi-GAN load once per app launch.
 actor NeurokoneSession {
     static let shared = NeurokoneSession()
@@ -276,40 +241,6 @@ public struct NeurokoneTTSService: TextSpeaking {
     }
 }
 
-/// macOS system TTS — Estonian only (Apple does not currently ship et voices on most Macs).
-public struct SystemSpeechSynthesizer: TextSpeaking {
-    public init() {}
-
-    public func speak(_ text: String, languageCode: String) async throws {
-        try await speakOnMain(text, languageCode: languageCode)
-    }
-
-    @MainActor
-    private func speakOnMain(_ text: String, languageCode: String) async throws {
-        guard let voice = EstonianVoice.bestAvailable() else {
-            throw EzeestiError.ttsFailed(
-                "No Estonian TTS available. Run Scripts/setup-neurokone.sh (Apple does not ship an Estonian system voice)."
-            )
-        }
-        _ = languageCode
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = voice
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.85
-
-            let synthesizer = AVSpeechSynthesizer()
-            let delegate = SpeakDelegate { result in
-                continuation.resume(with: result)
-            }
-            objc_setAssociatedObject(synthesizer, &SpeakDelegate.assocKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-            SpeakDelegate.retained.append(synthesizer)
-            synthesizer.delegate = delegate
-            synthesizer.speak(utterance)
-        }
-    }
-}
-
 enum WavPlayer {
     @MainActor
     static func play(url: URL) async throws {
@@ -329,33 +260,6 @@ enum WavPlayer {
                 continuation.resume(throwing: error)
             }
         }
-    }
-}
-
-private final class SpeakDelegate: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
-    static var assocKey: UInt8 = 0
-    static var retained: [AVSpeechSynthesizer] = []
-
-    private let completion: @Sendable (Result<Void, Error>) -> Void
-    private var finished = false
-
-    init(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
-        self.completion = completion
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        finish(synthesizer, .success(()))
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        finish(synthesizer, .failure(EzeestiError.ttsFailed("Speech cancelled")))
-    }
-
-    private func finish(_ synthesizer: AVSpeechSynthesizer, _ result: Result<Void, Error>) {
-        guard !finished else { return }
-        finished = true
-        SpeakDelegate.retained.removeAll { $0 === synthesizer }
-        completion(result)
     }
 }
 

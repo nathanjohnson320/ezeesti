@@ -84,7 +84,6 @@ public struct TutorFeedback: Codable, Sendable, Hashable {
 public struct ModelPaths: Sendable {
     public var whisperGGML: URL?
     public var estLLMGGUF: URL?
-    public var neurokoneDir: URL?
     /// Directory containing `libEzeestiWhisper.dylib` (+ whisper/ggml deps).
     public var whisperLibDir: URL?
     /// Directory containing `libEzeestiLlama.dylib` (+ llama/ggml deps).
@@ -94,14 +93,12 @@ public struct ModelPaths: Sendable {
     public init(
         whisperGGML: URL? = nil,
         estLLMGGUF: URL? = nil,
-        neurokoneDir: URL? = nil,
         whisperLibDir: URL? = nil,
         llamaLibDir: URL? = nil,
         neurokoneBinary: URL? = nil
     ) {
         self.whisperGGML = whisperGGML
         self.estLLMGGUF = estLLMGGUF
-        self.neurokoneDir = neurokoneDir
         self.whisperLibDir = whisperLibDir
         self.llamaLibDir = llamaLibDir
         self.neurokoneBinary = neurokoneBinary
@@ -134,7 +131,6 @@ public struct ModelPaths: Sendable {
         return ModelPaths(
             whisperGGML: root.appendingPathComponent("whisper/ggml-model.bin"),
             estLLMGGUF: root.appendingPathComponent("llm/Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"),
-            neurokoneDir: root.appendingPathComponent("tts/multispeaker", isDirectory: true),
             whisperLibDir: root.appendingPathComponent("native/whisper/lib", isDirectory: true),
             llamaLibDir: root.appendingPathComponent("native/llama/lib", isDirectory: true),
             neurokoneBinary: root.appendingPathComponent("bin/neurokone-cli")

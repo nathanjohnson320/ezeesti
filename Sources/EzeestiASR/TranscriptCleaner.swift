@@ -245,18 +245,3 @@ public enum TranscriptCleaner {
             .trimmingCharacters(in: .punctuationCharacters.union(.symbols))
     }
 }
-
-public struct MockSpeechRecognizer: SpeechRecognizing {
-    public var cannedText: String
-
-    public init(cannedText: String = "Ma lähen pood.") {
-        self.cannedText = cannedText
-    }
-
-    public func transcribe(audioURL: URL, initialPrompt: String?) async throws -> Transcript {
-        _ = audioURL
-        _ = initialPrompt
-        try await Task.sleep(nanoseconds: 400_000_000)
-        return Transcript(text: cannedText, languageHint: "et", durationSeconds: 0.4)
-    }
-}

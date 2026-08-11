@@ -97,7 +97,7 @@ int ezeesti_whisper_transcribe(
     params.initial_prompt = initial_prompt;
     params.n_threads = 4;
     // Short clips: one segment reduces trailing invented sentences ("… Lähme. Lähme.").
-    params.single_segment = n_samples < (16_000 * 6);
+    params.single_segment = n_samples < (16000 * 6);
 
     int rc = whisper_full(g_ctx, params, samples, n_samples);
     if (rc != 0) {
