@@ -1,5 +1,6 @@
 import Foundation
 
+/// A word or non-word span produced by `EstonianTokenizer`.
 public struct TextToken: Sendable, Hashable, Identifiable {
     public var id: Int { index }
     public let index: Int
@@ -15,7 +16,10 @@ public struct TextToken: Sendable, Hashable, Identifiable {
     }
 }
 
+/// Lightweight Estonian-oriented tokenizer (no morphological analysis yet).
 public enum EstonianTokenizer {
+    private static let wordExtras = CharacterSet(charactersIn: "'-’")
+
     /// Split text into word / non-word tokens. Lemma ≈ lowercased surface (Vabamorf later).
     public static func tokenize(_ text: String) -> [TextToken] {
         var tokens: [TextToken] = []
@@ -34,7 +38,7 @@ public enum EstonianTokenizer {
         }
 
         for ch in text {
-            let isWordChar = ch.isLetter || ch == "'" || ch == "-" || ch == "’"
+            let isWordChar = ch.isLetter || ch.unicodeScalars.allSatisfy { wordExtras.contains($0) }
             if currentIsWord == nil {
                 currentIsWord = isWordChar
                 current.append(ch)
@@ -50,6 +54,7 @@ public enum EstonianTokenizer {
         return tokens
     }
 
+    /// Lowercases and strips common quotation marks so surfaces can be used as lemma keys.
     public static func normalize(_ surface: String) -> String {
         surface
             .lowercased()

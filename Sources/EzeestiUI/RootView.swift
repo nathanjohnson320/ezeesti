@@ -7,29 +7,31 @@ import EzeestiTTS
 import EzeestiTutor
 import EzeestiLearning
 
+/// App root: boots shared native models, shows warmup, then the learning session.
 public struct RootView: View {
     @Environment(\.modelContext) private var modelContext
-    @StateObject private var engines = EngineHolder()
+    @State private var engines = EngineHolder()
 
     public init() {}
 
     public var body: some View {
         Group {
-            switch SetupPresentation.screen(
-                setupError: engines.setupError,
-                hasTutor: engines.tutor != nil,
-                holderReady: engines.isReady,
-                hasLearning: engines.learning != nil
-            ) {
-            case .failed(let message):
+            switch SetupPresentation.screen(engines.snapshot) {
+            case .failed(let failure):
                 VStack(spacing: 12) {
                     Text("Setup failed")
                         .font(.title.bold())
-                    Text(message)
+                    Text(failure.message)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                     Text("Run the setup commands in README.md, then relaunch Ezeesti.")
                         .font(.callout)
+                    #if DEBUG
+                    Text(failure.debugDescription)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                    #endif
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
@@ -53,84 +55,93 @@ public struct RootView: View {
             }
         }
         .task {
-            guard !engines.didStart else { return }
-            engines.didStart = true
-            do {
-                let paths = try ModelPaths.defaultApplicationSupport()
-                guard paths.whisperNativeReady,
-                      let whisperModel = paths.whisperGGML,
-                      let whisperLib = paths.whisperLibDir
-                else {
-                    throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
-                }
-                guard paths.llamaNativeReady,
-                      let llamaModel = paths.estLLMGGUF,
-                      let llamaLib = paths.llamaLibDir
-                else {
-                    throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
-                }
-                guard let neurokone = paths.neurokoneBinary,
-                      FileManager.default.isExecutableFile(atPath: neurokone.path)
-                else {
-                    throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
-                }
-
-                // One shared native stack for tutor + learning (avoid double Metal residency).
-                let whisper = WhisperCppService(modelPath: whisperModel, libDir: whisperLib)
-                let llama = LlamaCppService(modelPath: llamaModel, libDir: llamaLib)
-                let speaker = NeurokoneTTSService(binaryPath: neurokone)
-
-                let tutor = try TutorEngine(
-                    modelPaths: paths,
-                    recognizer: whisper,
-                    languageModel: llama,
-                    speaker: speaker
-                )
-                let store = VocabStore(modelContext: modelContext)
-                let learning = try LearningEngine(
-                    vocab: store,
-                    recognizer: whisper,
-                    languageModel: llama,
-                    speaker: speaker,
-                    modelPaths: paths
-                )
-                engines.attach(tutor: tutor, learning: learning)
-                learning.bootstrap()
-                try await tutor.warmupModels()
-                engines.markReady()
-            } catch {
-                engines.fail(error)
-            }
+            await engines.start(modelContext: modelContext)
         }
     }
 }
 
+/// Owns tutor/learning engines and launch readiness for `RootView` observation.
+@Observable
 @MainActor
-final class EngineHolder: ObservableObject {
-    @Published var tutor: TutorEngine?
-    @Published var learning: LearningEngine?
-    @Published var setupError: String?
-    /// Mirrors the tutor's warmup completion: nested ObservableObjects do not
-    /// propagate their changes to a parent view observing only this holder.
-    @Published var isReady = false
-    var didStart = false
+final class EngineHolder {
+    private(set) var tutor: TutorEngine?
+    private(set) var learning: LearningEngine?
+    private(set) var setupFailure: SetupFailure?
+    /// Mirrors the tutor's warmup completion: nested engine observation does not
+    /// automatically drive `SetupPresentation` unless readiness lives on this holder.
+    private(set) var isReady = false
+    private var hasStarted = false
 
-    func attach(tutor: TutorEngine, learning: LearningEngine) {
-        self.tutor = tutor
-        self.learning = learning
+    var snapshot: SetupSnapshot {
+        SetupSnapshot(
+            setupFailure: setupFailure,
+            hasTutor: tutor != nil,
+            holderReady: isReady,
+            hasLearning: learning != nil
+        )
     }
 
-    func markReady() {
-        isReady = true
-    }
+    /// Builds the shared native stack, boots learning, and warms tutor models once.
+    func start(modelContext: ModelContext) async {
+        guard !hasStarted else { return }
+        hasStarted = true
+        do {
+            let paths = try ModelPaths.defaultApplicationSupport()
+            guard paths.whisperNativeReady,
+                  let whisperModel = paths.whisperGGML,
+                  let whisperLib = paths.whisperLibDir
+            else {
+                throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
+            }
+            guard paths.llamaNativeReady,
+                  let llamaModel = paths.estLLMGGUF,
+                  let llamaLib = paths.llamaLibDir
+            else {
+                throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
+            }
+            guard let neurokone = paths.neurokoneBinary,
+                  FileManager.default.isExecutableFile(atPath: neurokone.path)
+            else {
+                throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
+            }
 
-    func fail(_ error: Error) {
-        setupError = error.localizedDescription
+            // One shared native stack for tutor + learning (avoid double Metal residency).
+            let whisper = WhisperCppService(modelPath: whisperModel, libDir: whisperLib)
+            let llama = LlamaCppService(modelPath: llamaModel, libDir: llamaLib)
+            let speaker = NeurokoneTTSService(binaryPath: neurokone)
+
+            let tutor = try TutorEngine(
+                modelPaths: paths,
+                recognizer: whisper,
+                languageModel: llama,
+                speaker: speaker
+            )
+            let store = VocabStore(modelContext: modelContext)
+            let learning = try LearningEngine(
+                vocab: store,
+                recognizer: whisper,
+                languageModel: llama,
+                speaker: speaker,
+                modelPaths: paths
+            )
+            self.tutor = tutor
+            self.learning = learning
+            await learning.bootstrap()
+            try await tutor.warmupModels()
+            isReady = true
+        } catch {
+            let failure = SetupFailure(from: error)
+            #if DEBUG
+            print("EngineHolder setup failure: \(failure.debugDescription)")
+            #endif
+            setupFailure = failure
+        }
     }
 }
 
+/// Sidebar + detail learning UI driven by `LearningEngine`.
 public struct LearningSessionView: View {
-    @ObservedObject var learning: LearningEngine
+    var learning: LearningEngine
     @State private var confirmReset = false
 
     public var body: some View {
@@ -163,7 +174,7 @@ public struct LearningSessionView: View {
                         } label: {
                             Label("Review \(learning.dueCount) word\(learning.dueCount == 1 ? "" : "s")", systemImage: "mic.fill")
                         }
-                        ForEach(learning.duePreview, id: \.lemma) { card in
+                        ForEach(learning.duePreview) { card in
                             Button {
                                 learning.startDueReview(preferringLemma: card.lemma)
                             } label: {
@@ -250,7 +261,7 @@ public struct LearningSessionView: View {
 }
 
 private struct WarmupView: View {
-    @ObservedObject var engine: TutorEngine
+    var engine: TutorEngine
 
     var body: some View {
         VStack(spacing: 20) {
@@ -269,7 +280,7 @@ private struct WarmupView: View {
 }
 
 private struct ReadingDetailView: View {
-    @ObservedObject var learning: LearningEngine
+    var learning: LearningEngine
 
     private var isPracticeActive: Bool {
         switch learning.phase {
@@ -321,9 +332,8 @@ private struct ReadingDetailView: View {
 
                         if !isPracticeActive {
                             if !learning.flaggedTokenIndexes.isEmpty {
-                                let flagged = learning.flaggedTokenIndexes.sorted().compactMap { idx -> String? in
-                                    guard report.tokens.indices.contains(idx), report.tokens[idx].isWord else { return nil }
-                                    return report.tokens[idx].surface
+                                let flagged = learning.flaggedTokenIndexes.sorted().compactMap { idx in
+                                    wordSurface(in: report, at: idx)
                                 }
                                 if !flagged.isEmpty {
                                     Text("Flagged (stay in learning): \(flagged.joined(separator: ", "))")
@@ -354,6 +364,14 @@ private struct ReadingDetailView: View {
                 )
             }
         }
+    }
+
+    /// Returns the surface for a word token at `index`, or `nil` when out of bounds / non-word.
+    private func wordSurface(in report: TextFamiliarityReport, at index: Int) -> String? {
+        guard report.tokens.indices.contains(index) else { return nil }
+        let token = report.tokens[index]
+        guard token.isWord else { return nil }
+        return token.surface
     }
 
     @ViewBuilder
@@ -452,6 +470,10 @@ private struct WordInspectorView: View {
     let glossSource: String?
     let onToggleFlag: () -> Void
 
+    private var lemmaDiffersFromSurface: Bool {
+        EstonianTokenizer.normalize(word.lemma) != EstonianTokenizer.normalize(word.surface)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
@@ -459,7 +481,7 @@ private struct WordInspectorView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(word.surface)
                         .font(.title2.weight(.bold))
-                    if EstonianTokenizer.normalize(word.lemma) != EstonianTokenizer.normalize(word.surface) {
+                    if lemmaDiffersFromSurface {
                         Text("lemma: \(word.lemma)")
                             .font(.caption)
                             .foregroundStyle(.secondary)

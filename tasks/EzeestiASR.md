@@ -35,5 +35,5 @@ Status legend: `[x]` done · `[ ]` open · `[~]` deferred (needs redesign) · `[
 ---
 
 ## Follow-ups outside ASR
-- Apply the same `actor` + explicit lifecycle pattern to `LlamaCppService`.
+- [x] Apply the same `actor` + explicit lifecycle pattern to `LlamaCppService`.
 - Share one native stack from UI (done in `RootView`) — keep that pattern when adding new engines.

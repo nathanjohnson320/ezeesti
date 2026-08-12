@@ -19,12 +19,12 @@ final class VocabStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testLexiconSeedIntoSQLite() throws {
+    func testLexiconSeedIntoSQLite() async throws {
         let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
-        let count = try store.seedLexiconFromBundleIfNeeded()
+        let count = try await store.seedLexiconFromBundleIfNeeded()
         XCTAssertGreaterThanOrEqual(count, 1000)
         XCTAssertGreaterThanOrEqual(try store.lexiconCount(), 1000)
         // Progress table still empty — lexicon ≠ known.

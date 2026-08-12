@@ -69,6 +69,7 @@ public struct SentenceValidationPrompt {
     }
 }
 
+/// JSON result from the sentence-validation pass.
 public struct SentenceValidationResult: Codable, Sendable, Equatable {
     public let ok: Bool
     public let title: String
@@ -92,9 +93,9 @@ public struct SentenceValidationResult: Codable, Sendable, Equatable {
         self.focusWords = focusWords
         self.reason = reason
     }
-
 }
 
+/// Parses validation JSON and reuses passage usability gates (no encode→decode round-trip).
 public enum SentenceValidationParser {
     public static func parse(
         _ raw: String,
@@ -108,44 +109,14 @@ public enum SentenceValidationParser {
             glossEnglish: result.glossEnglish.trimmingCharacters(in: .whitespacesAndNewlines),
             focusWords: result.focusWords.isEmpty ? requiredFocus : result.focusWords
         )
-        // Reuse generation usability gates on the validated/repaired draft.
-        return PassageGenerationParser.parse(
-            encode(draft),
+        return PassageGenerationParser.gradedText(
+            from: draft,
             requiredFocus: requiredFocus,
             cefr: cefr
         )
     }
 
     public static func decode(_ raw: String) -> SentenceValidationResult? {
-        let trimmed = strip(raw)
-        if let data = trimmed.data(using: .utf8),
-           let result = try? JSONDecoder().decode(SentenceValidationResult.self, from: data) {
-            return result
-        }
-        if let slice = extractJSON(trimmed),
-           let data = slice.data(using: .utf8),
-           let result = try? JSONDecoder().decode(SentenceValidationResult.self, from: data) {
-            return result
-        }
-        return nil
-    }
-
-    private static func encode(_ draft: PassageDraft) -> String {
-        let data = (try? JSONEncoder().encode(draft)) ?? Data()
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-
-    private static func strip(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.hasPrefix("```") {
-            result = result.replacingOccurrences(of: "```json", with: "")
-            result = result.replacingOccurrences(of: "```", with: "")
-        }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func extractJSON(_ text: String) -> String? {
-        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") else { return nil }
-        return String(text[start...end])
+        LLMJSON.decodeIfPresent(SentenceValidationResult.self, from: raw)
     }
 }

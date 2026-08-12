@@ -1,8 +1,10 @@
 import Foundation
+import Observation
 import SwiftData
 import EzeestiCore
 
 /// Static dictionary row (not learner progress). Seeded once from bundled top-10k JSON into SwiftData/SQLite.
+/// Stored properties stay writable for SwiftData persistence; mutate learner state through `VocabStore`.
 @Model
 public final class LexiconWord {
     @Attribute(.unique) public var lemma: String
@@ -17,7 +19,7 @@ public final class LexiconWord {
     }
 
     public var asEntry: LexiconEntry {
-        LexiconEntry(lemma: lemma, cefr: cefr, pos: pos, freqRank: freqRank)
+        LexiconEntry(lemma: lemma, cefr: cefr, pos: pos.isEmpty ? nil : pos, freqRank: freqRank)
     }
 
     public init(lemma: String, cefr: CEFRLevel?, pos: String, freqRank: Int?, source: String = "estonian-top10k") {
@@ -29,6 +31,7 @@ public final class LexiconWord {
     }
 }
 
+/// Cached EstLLM / offline English gloss for a lemma.
 @Model
 public final class CachedGloss {
     @Attribute(.unique) public var lemma: String
@@ -44,6 +47,7 @@ public final class CachedGloss {
     }
 }
 
+/// Learner SRS card for one lemma (known / learning / due schedule).
 @Model
 public final class VocabCard {
     @Attribute(.unique) public var lemma: String
@@ -64,8 +68,9 @@ public final class VocabCard {
     public var createdAt: Date
     public var updatedAt: Date
 
+    /// Invalid persisted raw values are treated as `.unknown` (not `.learning`) so bad data is visible.
     public var familiarity: VocabFamiliarity {
-        get { VocabFamiliarity(rawValue: familiarityRaw) ?? .learning }
+        get { VocabFamiliarity(rawValue: familiarityRaw) ?? .unknown }
         set { familiarityRaw = newValue.rawValue }
     }
 
@@ -95,12 +100,23 @@ public final class VocabCard {
     }
 }
 
+/// SwiftData-backed vocab / lexicon / gloss store used by `LearningEngine`.
+///
+/// Interactive card/gloss APIs stay on the main actor (UI holds `@Model` instances).
+/// Heavy seed/cleanup runs on `VocabBackgroundStore` (`@ModelActor`).
+@Observable
 @MainActor
-public final class VocabStore: ObservableObject {
-    public let modelContext: ModelContext
+public final class VocabStore {
+    private static let clearedAssumedSeedKey = "ezeesti.clearedAssumedSeedVocab.v1"
 
-    public init(modelContext: ModelContext) {
+    private let modelContext: ModelContext
+    private let defaults: UserDefaults
+    private let background: VocabBackgroundStore
+
+    public init(modelContext: ModelContext, defaults: UserDefaults = .standard) {
         self.modelContext = modelContext
+        self.defaults = defaults
+        self.background = VocabBackgroundStore(modelContainer: modelContext.container)
     }
 
     public static func makeContainer() throws -> ModelContainer {
@@ -115,33 +131,8 @@ public final class VocabStore: ObservableObject {
 
     /// Import bundled top-10k JSON into SQLite once (dictionary catalog, not “known”).
     @discardableResult
-    public func seedLexiconFromBundleIfNeeded() throws -> Int {
-        let existing = try modelContext.fetch(FetchDescriptor<LexiconWord>())
-        if existing.count >= 9000 {
-            return existing.count
-        }
-
-        LexiconCatalog.shared.loadBundledIfNeeded()
-        guard let file = LexiconCatalog.shared.file else { return existing.count }
-
-        for row in existing {
-            modelContext.delete(row)
-        }
-
-        for entry in file.words {
-            let lemma = EstonianTokenizer.normalize(entry.lemma)
-            modelContext.insert(
-                LexiconWord(
-                    lemma: lemma,
-                    cefr: entry.cefr,
-                    pos: entry.pos,
-                    freqRank: entry.freqRank,
-                    source: file.source
-                )
-            )
-        }
-        try modelContext.save()
-        return file.words.count
+    public func seedLexiconFromBundleIfNeeded() async throws -> Int {
+        try await background.seedLexiconFromBundleIfNeeded()
     }
 
     public func lexiconCount() throws -> Int {
@@ -150,6 +141,7 @@ public final class VocabStore: ObservableObject {
 
     public func lexiconEntry(forSurface surface: String) throws -> LexiconEntry? {
         let lemma = EstonianTokenizer.normalize(surface)
+        guard !lemma.isEmpty else { return nil }
         var descriptor = FetchDescriptor<LexiconWord>(
             predicate: #Predicate { $0.lemma == lemma }
         )
@@ -158,25 +150,12 @@ public final class VocabStore: ObservableObject {
     }
 
     /// One-time cleanup: early builds auto-inserted an A1 word list as "known".
-    public func clearAssumedSeedVocabularyIfNeeded() throws {
-        let key = "ezeesti.clearedAssumedSeedVocab.v1"
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
-
-        let seed = GradedTextCatalog.loadSeedKnownLemmas()
-        let all = try fetchAll()
-        for card in all {
-            let looksLikeSeed =
-                card.familiarity == .known
-                && seed.contains(card.lemma)
-                && card.contextSentence.isEmpty
-                && card.lastReview == nil
-                && card.scheduledDays >= 365
-            if looksLikeSeed {
-                modelContext.delete(card)
-            }
+    public func clearAssumedSeedVocabularyIfNeeded() async throws {
+        let alreadyCleared = defaults.bool(forKey: Self.clearedAssumedSeedKey)
+        let didClear = try await background.clearAssumedSeedVocabularyIfNeeded(alreadyCleared: alreadyCleared)
+        if didClear {
+            defaults.set(true, forKey: Self.clearedAssumedSeedKey)
         }
-        try modelContext.save()
-        UserDefaults.standard.set(true, forKey: key)
     }
 
     public func fetchAll() throws -> [VocabCard] {
@@ -185,23 +164,43 @@ public final class VocabStore: ObservableObject {
 
     /// Delete all learner vocab cards (known/learning/due). Lexicon and gloss cache stay.
     public func resetProgress() throws {
-        for card in try fetchAll() {
-            modelContext.delete(card)
-        }
+        try modelContext.delete(model: VocabCard.self)
         try modelContext.save()
     }
 
     public func knownLemmas() throws -> Set<String> {
-        Set(try fetchAll().filter { $0.familiarity == .known }.map(\.lemma))
+        let knownRaw = VocabFamiliarity.known.rawValue
+        let cards = try modelContext.fetch(
+            FetchDescriptor<VocabCard>(
+                predicate: #Predicate { $0.familiarityRaw == knownRaw }
+            )
+        )
+        return Set(cards.map(\.lemma))
+    }
+
+    public func learningLemmas() throws -> Set<String> {
+        let learningRaw = VocabFamiliarity.learning.rawValue
+        let cards = try modelContext.fetch(
+            FetchDescriptor<VocabCard>(
+                predicate: #Predicate { $0.familiarityRaw == learningRaw }
+            )
+        )
+        return Set(cards.map(\.lemma))
     }
 
     public func card(forSurface surface: String) throws -> VocabCard? {
         let lemma = EstonianTokenizer.normalize(surface)
-        return try fetchAll().first(where: { $0.lemma == lemma })
+        guard !lemma.isEmpty else { return nil }
+        var descriptor = FetchDescriptor<VocabCard>(
+            predicate: #Predicate { $0.lemma == lemma }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
     }
 
     public func cachedGloss(forSurface surface: String) throws -> String? {
         let lemma = EstonianTokenizer.normalize(surface)
+        guard !lemma.isEmpty else { return nil }
         var descriptor = FetchDescriptor<CachedGloss>(
             predicate: #Predicate { $0.lemma == lemma }
         )
@@ -218,7 +217,12 @@ public final class VocabStore: ObservableObject {
     ) throws {
         let lemma = EstonianTokenizer.normalize(surface)
         let gloss = glossEnglish.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !gloss.isEmpty else { return }
+        guard !lemma.isEmpty else {
+            throw EzeestiError.invalidLessonData("Cannot save gloss for empty surface")
+        }
+        guard !gloss.isEmpty else {
+            throw EzeestiError.invalidLessonData("Cannot save empty gloss for \(lemma)")
+        }
 
         var descriptor = FetchDescriptor<CachedGloss>(
             predicate: #Predicate { $0.lemma == lemma }
@@ -242,9 +246,8 @@ public final class VocabStore: ObservableObject {
 
     public func progressSnapshot(now: Date = Date()) throws -> LearnerProgress {
         LexiconCatalog.shared.loadBundledIfNeeded()
-        let all = try fetchAll()
-        let known = Set(all.filter { $0.familiarity == .known }.map(\.lemma))
-        let learning = all.filter { $0.familiarity == .learning }.count
+        let known = try knownLemmas()
+        let learning = try learningLemmas().count
         let due = try dueCount(now: now)
 
         var byLevel: [CEFRLevel: Set<String>] = [:]
@@ -263,12 +266,20 @@ public final class VocabStore: ObservableObject {
     }
 
     public func dueCards(now: Date = Date(), limit: Int = 20) throws -> [VocabCard] {
-        let due = try fetchAll().filter { $0.due <= now }
-        return Array(due.sorted { $0.due < $1.due }.prefix(limit))
+        var descriptor = FetchDescriptor<VocabCard>(
+            predicate: #Predicate { $0.due <= now },
+            sortBy: [SortDescriptor(\.due)]
+        )
+        descriptor.fetchLimit = max(0, limit)
+        return try modelContext.fetch(descriptor)
     }
 
     public func dueCount(now: Date = Date()) throws -> Int {
-        try dueCards(now: now, limit: 10_000).count
+        try modelContext.fetchCount(
+            FetchDescriptor<VocabCard>(
+                predicate: #Predicate { $0.due <= now }
+            )
+        )
     }
 
     @discardableResult
@@ -278,7 +289,11 @@ public final class VocabStore: ObservableObject {
         glossEnglish: String = ""
     ) throws -> VocabCard {
         let lemma = EstonianTokenizer.normalize(surface)
-        if let existing = try fetchAll().first(where: { $0.lemma == lemma }) {
+        guard !lemma.isEmpty else {
+            throw EzeestiError.invalidLessonData("Cannot flag empty surface")
+        }
+
+        if let existing = try card(forSurface: surface) {
             existing.surfaceForm = surface
             existing.contextSentence = contextSentence
             existing.familiarity = .learning
@@ -306,57 +321,63 @@ public final class VocabStore: ObservableObject {
 
     /// Correct read-aloud of an unflagged word: mark known and schedule exponential review.
     public func markKnownWithBackoff(_ lemmas: [String], now: Date = Date()) throws {
-        let all = try fetchAll()
-        for lemma in lemmas {
-            let key = EstonianTokenizer.normalize(lemma)
-            if let existing = all.first(where: { $0.lemma == key }), existing.familiarity == .known {
+        let keys = normalizedUniqueKeys(lemmas)
+        guard !keys.isEmpty else {
+            throw EzeestiError.invalidLessonData("No lemmas to mark known")
+        }
+
+        for key in keys {
+            if let existing = try card(forSurface: key), existing.familiarity == .known {
                 try recordReviewSuccess(existing, now: now)
                 continue
             }
 
-            let card: VocabCard
-            if let existing = all.first(where: { $0.lemma == key }) {
-                card = existing
+            let target: VocabCard
+            if let existing = try card(forSurface: key) {
+                target = existing
             } else {
-                card = VocabCard(
+                target = VocabCard(
                     lemma: key,
-                    surfaceForm: lemma,
+                    surfaceForm: key,
                     familiarity: .known
                 )
-                modelContext.insert(card)
+                modelContext.insert(target)
             }
-            card.familiarity = .known
-            card.scheduledDays = ExponentialBackoff.initialIntervalDays
-            card.due = ExponentialBackoff.dueDate(from: now, intervalDays: card.scheduledDays)
-            card.lastReview = now
-            card.reps = max(card.reps, 1)
-            card.updatedAt = now
+            target.familiarity = .known
+            target.scheduledDays = ExponentialBackoff.initialIntervalDays
+            target.due = ExponentialBackoff.dueDate(from: now, intervalDays: target.scheduledDays)
+            target.lastReview = now
+            target.reps = max(target.reps, 1)
+            target.updatedAt = now
         }
         try modelContext.save()
     }
 
     /// Flagged or incorrect: keep learning and make due immediately.
     public func markLearningDueSoon(_ lemmas: [String], now: Date = Date()) throws {
-        let all = try fetchAll()
-        for lemma in lemmas {
-            let key = EstonianTokenizer.normalize(lemma)
-            let card: VocabCard
-            if let existing = all.first(where: { $0.lemma == key }) {
-                card = existing
+        let keys = normalizedUniqueKeys(lemmas)
+        guard !keys.isEmpty else {
+            throw EzeestiError.invalidLessonData("No lemmas to mark learning")
+        }
+
+        for key in keys {
+            let target: VocabCard
+            if let existing = try card(forSurface: key) {
+                target = existing
             } else {
-                card = VocabCard(
+                target = VocabCard(
                     lemma: key,
-                    surfaceForm: lemma,
+                    surfaceForm: key,
                     familiarity: .learning
                 )
-                modelContext.insert(card)
+                modelContext.insert(target)
             }
-            card.familiarity = .learning
-            card.scheduledDays = ExponentialBackoff.initialIntervalDays
-            card.due = now
-            card.lapses += 1
-            card.lastReview = now
-            card.updatedAt = now
+            target.familiarity = .learning
+            target.scheduledDays = ExponentialBackoff.initialIntervalDays
+            target.due = now
+            target.lapses += 1
+            target.lastReview = now
+            target.updatedAt = now
         }
         try modelContext.save()
     }
@@ -370,5 +391,16 @@ public final class VocabStore: ObservableObject {
         card.lastReview = now
         card.updatedAt = now
         try modelContext.save()
+    }
+
+    private func normalizedUniqueKeys(_ lemmas: [String]) -> [String] {
+        var seen = Set<String>()
+        var keys: [String] = []
+        for lemma in lemmas {
+            let key = EstonianTokenizer.normalize(lemma)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            keys.append(key)
+        }
+        return keys
     }
 }

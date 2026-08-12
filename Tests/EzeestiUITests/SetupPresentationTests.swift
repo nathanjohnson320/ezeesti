@@ -1,42 +1,50 @@
 import XCTest
-import Combine
 @testable import EzeestiUI
 
 final class SetupPresentationTests: XCTestCase {
     func testStartsCheckingUntilTutorIsAttached() {
         XCTAssertEqual(
             SetupPresentation.screen(
-                setupError: nil,
-                hasTutor: false,
-                holderReady: false,
-                hasLearning: false
+                SetupSnapshot(
+                    setupFailure: nil,
+                    hasTutor: false,
+                    holderReady: false,
+                    hasLearning: false
+                )
             ),
             .checking
         )
     }
 
     func testShowsFailureWhenSetupErrors() {
+        let failure = SetupFailure(message: "Model missing", debugDescription: "EzeestiError.modelMissing")
         XCTAssertEqual(
             SetupPresentation.screen(
-                setupError: "Model missing",
-                hasTutor: false,
-                holderReady: false,
-                hasLearning: false
+                SetupSnapshot(
+                    setupFailure: failure,
+                    hasTutor: false,
+                    holderReady: false,
+                    hasLearning: false
+                )
             ),
-            .failed("Model missing")
+            .failed(failure)
         )
+        XCTAssertEqual(failure.message, "Model missing")
+        XCTAssertEqual(failure.debugDescription, "EzeestiError.modelMissing")
     }
 
     /// Regression: WarmupView can show "Ready" once TutorEngine publishes
     /// `.ready`, but RootView only observes EngineHolder. Leaving warmup must
-    /// wait for `holderReady` (set via `markReady()` after warmup returns).
+    /// wait for `holderReady` (set after warmup returns inside `start`).
     func testTutorWarmupFinishedAloneDoesNotLeaveWarmupScreen() {
         XCTAssertEqual(
             SetupPresentation.screen(
-                setupError: nil,
-                hasTutor: true,
-                holderReady: false,
-                hasLearning: true
+                SetupSnapshot(
+                    setupFailure: nil,
+                    hasTutor: true,
+                    holderReady: false,
+                    hasLearning: true
+                )
             ),
             .warming,
             "Nested tutor readiness must not drive RootView; use EngineHolder.isReady"
@@ -46,10 +54,12 @@ final class SetupPresentationTests: XCTestCase {
     func testHolderReadyWithLearningEntersSession() {
         XCTAssertEqual(
             SetupPresentation.screen(
-                setupError: nil,
-                hasTutor: true,
-                holderReady: true,
-                hasLearning: true
+                SetupSnapshot(
+                    setupFailure: nil,
+                    hasTutor: true,
+                    holderReady: true,
+                    hasLearning: true
+                )
             ),
             .session
         )
@@ -58,10 +68,12 @@ final class SetupPresentationTests: XCTestCase {
     func testHolderReadyWithoutLearningStaysWarming() {
         XCTAssertEqual(
             SetupPresentation.screen(
-                setupError: nil,
-                hasTutor: true,
-                holderReady: true,
-                hasLearning: false
+                SetupSnapshot(
+                    setupFailure: nil,
+                    hasTutor: true,
+                    holderReady: true,
+                    hasLearning: false
+                )
             ),
             .warming
         )
@@ -70,19 +82,13 @@ final class SetupPresentationTests: XCTestCase {
 
 @MainActor
 final class EngineHolderTests: XCTestCase {
-    func testMarkReadyPublishesOnHolder() {
+    func testInitialHolderState() {
         let holder = EngineHolder()
         XCTAssertFalse(holder.isReady)
-
-        var didPublish = false
-        let observation = holder.objectWillChange.sink { _ in
-            didPublish = true
-        }
-
-        holder.markReady()
-
-        XCTAssertTrue(holder.isReady)
-        XCTAssertTrue(didPublish, "RootView must see objectWillChange from the holder")
-        _ = observation
+        XCTAssertNil(holder.tutor)
+        XCTAssertNil(holder.learning)
+        XCTAssertNil(holder.setupFailure)
+        XCTAssertEqual(holder.snapshot.hasTutor, false)
+        XCTAssertEqual(SetupPresentation.screen(holder.snapshot), .checking)
     }
 }

@@ -30,6 +30,7 @@ public extension LanguageModeling {
     func shutdown() async {}
 }
 
+/// Prompt that asks EstLLM to grade a lesson-item transcript as JSON `TutorFeedback`.
 public struct GrammarTutorPrompt {
     public let target: LessonItem
     public let pack: LessonPack
@@ -73,42 +74,9 @@ public struct GrammarTutorPrompt {
     }
 }
 
+/// Decodes tutor grading JSON from EstLLM (throws when the reply is not usable feedback).
 public enum TutorFeedbackParser {
     public static func parse(_ raw: String) throws -> TutorFeedback {
-        let trimmed = stripMarkdownFences(raw).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let data = trimmed.data(using: .utf8),
-           let feedback = try? JSONDecoder().decode(TutorFeedback.self, from: data) {
-            return feedback
-        }
-
-        if let jsonSlice = extractJSONObject(from: trimmed),
-           let data = jsonSlice.data(using: .utf8),
-           let feedback = try? JSONDecoder().decode(TutorFeedback.self, from: data) {
-            return feedback
-        }
-
-        // Fallback when the model ignores JSON.
-        return TutorFeedback(
-            verdict: .close,
-            correction: trimmed,
-            explanation: trimmed,
-            retryPrompt: "Try saying the corrected sentence again."
-        )
-    }
-
-    private static func stripMarkdownFences(_ text: String) -> String {
-        var result = text
-        if result.hasPrefix("```") {
-            result = result.replacingOccurrences(of: "```json", with: "")
-            result = result.replacingOccurrences(of: "```", with: "")
-        }
-        return result
-    }
-
-    private static func extractJSONObject(from text: String) -> String? {
-        guard let start = text.firstIndex(of: "{"),
-              let end = text.lastIndex(of: "}") else { return nil }
-        return String(text[start...end])
+        try LLMJSON.decode(TutorFeedback.self, from: raw)
     }
 }

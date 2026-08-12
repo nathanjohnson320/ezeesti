@@ -1,19 +1,21 @@
 import Foundation
 import EzeestiCore
 
+/// Prompt that asks EstLLM for a short English gloss of one Estonian surface.
 public struct WordGlossPrompt {
     public let surface: String
     public let lemma: String
     public let contextSentence: String
     public let cefr: CEFRLevel?
-    public let pos: String
+    /// Coarse POS tag from the lexicon when known.
+    public let pos: String?
 
     public init(
         surface: String,
         lemma: String,
         contextSentence: String,
         cefr: CEFRLevel?,
-        pos: String
+        pos: String?
     ) {
         self.surface = surface
         self.lemma = lemma
@@ -40,7 +42,7 @@ public struct WordGlossPrompt {
         if let cefr {
             lines.append("CEFR: \(cefr.rawValue)")
         }
-        if !pos.isEmpty {
+        if let pos, !pos.isEmpty {
             lines.append("POS: \(pos)")
         }
         if !contextSentence.isEmpty {
@@ -51,24 +53,21 @@ public struct WordGlossPrompt {
     }
 }
 
+/// Parses `{"gloss":"..."}` from EstLLM; falls back to a short plain reply only when the text is not JSON-like.
 public enum WordGlossParser {
     private struct Payload: Decodable {
         let gloss: String
     }
 
     public static func parse(_ raw: String) -> String? {
-        let trimmed = stripMarkdownFences(raw).trimmingCharacters(in: .whitespacesAndNewlines)
-        if let data = trimmed.data(using: .utf8),
-           let payload = try? JSONDecoder().decode(Payload.self, from: data) {
+        if let payload = LLMJSON.decodeIfPresent(Payload.self, from: raw) {
             return clean(payload.gloss)
         }
-        if let slice = extractJSONObject(from: trimmed),
-           let data = slice.data(using: .utf8),
-           let payload = try? JSONDecoder().decode(Payload.self, from: data) {
-            return clean(payload.gloss)
-        }
-        // Last resort: treat a short plain reply as the gloss.
-        if trimmed.count <= 80, !trimmed.contains("{"), !trimmed.isEmpty {
+
+        let trimmed = LLMJSON.stripMarkdownFences(raw)
+        // Last resort: treat a short plain reply as the gloss when it clearly is not JSON.
+        let looksLikeJSON = trimmed.contains("{") || trimmed.contains("}")
+        if !looksLikeJSON, trimmed.count <= 80, !trimmed.isEmpty {
             return clean(trimmed)
         }
         return nil
@@ -77,20 +76,5 @@ public enum WordGlossParser {
     private static func clean(_ gloss: String) -> String? {
         let g = gloss.trimmingCharacters(in: .whitespacesAndNewlines)
         return g.isEmpty ? nil : g
-    }
-
-    private static func stripMarkdownFences(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.hasPrefix("```") {
-            result = result.replacingOccurrences(of: "```json", with: "")
-            result = result.replacingOccurrences(of: "```", with: "")
-        }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func extractJSONObject(from text: String) -> String? {
-        guard let start = text.firstIndex(of: "{"),
-              let end = text.lastIndex(of: "}") else { return nil }
-        return String(text[start...end])
     }
 }

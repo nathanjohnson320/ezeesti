@@ -1,5 +1,6 @@
 import Foundation
 
+/// Common European Framework proficiency band used throughout the app.
 public enum CEFRLevel: String, Codable, Sendable, CaseIterable, Identifiable {
     case a1 = "A1"
     case a2 = "A2"
@@ -81,14 +82,16 @@ public struct TutorFeedback: Codable, Sendable, Hashable {
     }
 }
 
+/// Locations of on-disk Whisper / EstLLM / Neurokõne artifacts under Application Support.
+/// Prefer the `defaultApplicationSupport()` factory (creates the Models root) over manual path plumbing.
 public struct ModelPaths: Sendable {
-    public var whisperGGML: URL?
-    public var estLLMGGUF: URL?
+    public let whisperGGML: URL?
+    public let estLLMGGUF: URL?
     /// Directory containing `libEzeestiWhisper.dylib` (+ whisper/ggml deps).
-    public var whisperLibDir: URL?
+    public let whisperLibDir: URL?
     /// Directory containing `libEzeestiLlama.dylib` (+ llama/ggml deps).
-    public var llamaLibDir: URL?
-    public var neurokoneBinary: URL?
+    public let llamaLibDir: URL?
+    public let neurokoneBinary: URL?
 
     public init(
         whisperGGML: URL? = nil,
@@ -106,18 +109,17 @@ public struct ModelPaths: Sendable {
 
     public var whisperNativeReady: Bool {
         guard let model = whisperGGML, let lib = whisperLibDir else { return false }
-        let fm = FileManager.default
-        return fm.fileExists(atPath: model.path)
-            && fm.fileExists(atPath: lib.appendingPathComponent("libEzeestiWhisper.dylib").path)
+        let dylib = lib.appendingPathComponent("libEzeestiWhisper.dylib")
+        return Self.isReachable(model) && Self.isReachable(dylib)
     }
 
     public var llamaNativeReady: Bool {
         guard let model = estLLMGGUF, let lib = llamaLibDir else { return false }
-        let fm = FileManager.default
-        return fm.fileExists(atPath: model.path)
-            && fm.fileExists(atPath: lib.appendingPathComponent("libEzeestiLlama.dylib").path)
+        let dylib = lib.appendingPathComponent("libEzeestiLlama.dylib")
+        return Self.isReachable(model) && Self.isReachable(dylib)
     }
 
+    /// Creates `Application Support/Ezeesti/Models` if needed and returns the conventional artifact paths.
     public static func defaultApplicationSupport() throws -> ModelPaths {
         let root = try FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -136,8 +138,13 @@ public struct ModelPaths: Sendable {
             neurokoneBinary: root.appendingPathComponent("bin/neurokone-cli")
         )
     }
+
+    private static func isReachable(_ url: URL) -> Bool {
+        (try? url.checkResourceIsReachable()) == true
+    }
 }
 
+/// User-facing failures from recording, models, and bundled content.
 public enum EzeestiError: Error, LocalizedError, Sendable {
     case modelMissing(String)
     case recordingFailed(String)

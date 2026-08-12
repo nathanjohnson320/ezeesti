@@ -1,11 +1,13 @@
 import Foundation
 
+/// Learner familiarity for a lemma surface.
 public enum VocabFamiliarity: String, Codable, Sendable, CaseIterable {
     case unknown
     case learning
     case known
 }
 
+/// A short graded reading passage (bundled or LLM-generated).
 public struct GradedText: Codable, Sendable, Identifiable, Hashable {
     public let id: String
     public let title: String
@@ -41,14 +43,16 @@ public struct GradedText: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
+/// Token-level known/unknown breakdown for a graded text against a lemma set.
 public struct TextFamiliarityReport: Sendable {
     public let tokens: [TextToken]
     public let knownCount: Int
     public let wordCount: Int
     public let predictedUnknown: Set<Int>
 
+    /// Fraction of word tokens marked known. Empty text returns `0` (not vacuous 100%).
     public var knownRatio: Double {
-        guard wordCount > 0 else { return 1 }
+        guard wordCount > 0 else { return 0 }
         return Double(knownCount) / Double(wordCount)
     }
 
@@ -57,17 +61,35 @@ public struct TextFamiliarityReport: Sendable {
     }
 }
 
+/// Bundled graded texts helpers and A1 seed lemmas.
 public enum GradedTextCatalog {
+    /// High-frequency glue / closed-class words that should not be passage focus targets.
+    public static let baselineFunctionWords: Set<String> = [
+        "ma", "sa", "ta", "me", "te", "nad", "ja", "on", "ei", "jah",
+        "tere", "palun", "aitäh", "hommikust", "head", "aega",
+        "lähen", "tahan", "teen", "söön", "joon", "olen",
+        "see", "seal", "siin", "nüüd", "täna", "homme",
+        "suur", "väike", "hea", "ilus", "uus",
+        "maja", "kool", "pood", "kodu", "töö", "auto", "buss",
+        "kohv", "tee", "vesi", "leib", "piim",
+        "üks", "kaks", "kolm", "neli", "viis",
+    ]
+
+    /// Loads the bundled A1 seed lemma list. Returns `[]` if the resource is missing or invalid.
     public static func loadSeedKnownLemmas() -> Set<String> {
-        let candidates = [
-            Bundle.module.url(forResource: "a1-seed-known", withExtension: "json", subdirectory: "Texts"),
-            Bundle.module.url(forResource: "a1-seed-known", withExtension: "json"),
-        ]
-        guard let url = candidates.compactMap({ $0 }).first,
-              let data = try? Data(contentsOf: url),
-              let words = try? JSONDecoder().decode([String].self, from: data) else {
-            return []
+        (try? loadSeedKnownLemmasThrowing()) ?? []
+    }
+
+    /// Throwing variant for callers that want load failures to surface.
+    public static func loadSeedKnownLemmasThrowing() throws -> Set<String> {
+        let url =
+            Bundle.module.url(forResource: "a1-seed-known", withExtension: "json", subdirectory: "Texts")
+            ?? Bundle.module.url(forResource: "a1-seed-known", withExtension: "json")
+        guard let url else {
+            throw EzeestiError.invalidLessonData("Missing a1-seed-known.json")
         }
+        let data = try Data(contentsOf: url)
+        let words = try JSONDecoder().decode([String].self, from: data)
         return Set(words.map { EstonianTokenizer.normalize($0) })
     }
 
@@ -94,15 +116,4 @@ public enum GradedTextCatalog {
             predictedUnknown: predicted
         )
     }
-
-    public static let baselineFunctionWords: [String] = [
-        "ma", "sa", "ta", "me", "te", "nad", "ja", "on", "ei", "jah",
-        "tere", "palun", "aitäh", "hommikust", "head", "aega",
-        "lähen", "tahan", "teen", "söön", "joon", "olen",
-        "see", "see", "seal", "siin", "nüüd", "täna", "homme",
-        "suur", "väike", "hea", "ilus", "uus",
-        "maja", "kool", "pood", "kodu", "töö", "auto", "buss",
-        "kohv", "tee", "vesi", "leib", "piim",
-        "üks", "kaks", "kolm", "neli", "viis",
-    ]
 }

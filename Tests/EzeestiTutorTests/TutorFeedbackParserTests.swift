@@ -21,4 +21,8 @@ final class TutorFeedbackParserTests: XCTestCase {
         let feedback = try TutorFeedbackParser.parse(raw)
         XCTAssertEqual(feedback.verdict, .correct)
     }
+
+    func testThrowsOnNonJSON() {
+        XCTAssertThrowsError(try TutorFeedbackParser.parse("not json at all"))
+    }
 }

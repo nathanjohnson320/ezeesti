@@ -1,6 +1,7 @@
 import Foundation
 import EzeestiCore
 
+/// Prompt that asks EstLLM for a single graded read-aloud sentence as JSON.
 public struct PassageGenerationPrompt {
     public let cefr: CEFRLevel
     public let focusLemmas: [String]
@@ -63,6 +64,7 @@ public struct PassageGenerationPrompt {
     }
 }
 
+/// JSON draft returned by passage generation / sentence validation.
 public struct PassageDraft: Codable, Sendable, Equatable {
     public let title: String
     public let body: String
@@ -77,7 +79,11 @@ public struct PassageDraft: Codable, Sendable, Equatable {
     }
 }
 
+/// Parses and gates EstLLM passage drafts into `GradedText`.
 public enum PassageGenerationParser {
+    private static let minimumWordCount = 6
+    private static let maximumWordCount = 20
+
     private static let placeholderFragments: [String] = [
         "short Estonian title",
         "3–5 short Estonian sentences",
@@ -99,35 +105,32 @@ public enum PassageGenerationParser {
         "uusi sõnu. ma ütlen",
     ]
 
+    /// Function words that should not be forced into “Mul on …” frames.
+    private static let nonPossessableFocus: Set<String> = [
+        "kes", "kuidas", "ka", "mitte", "ära", "kõik", "välja", "tema",
+        "mis", "kas", "kui", "et", "aga", "oma", "siis", "nii", "ja", "ei",
+    ]
+
     public static func parse(
         _ raw: String,
         requiredFocus: [String],
         cefr: CEFRLevel
     ) -> GradedText? {
-        guard let draft = decode(raw), isUsable(draft, requiredFocus: requiredFocus) else {
+        guard let draft = LLMJSON.decodeIfPresent(PassageDraft.self, from: raw) else {
             return nil
         }
+        return gradedText(from: draft, requiredFocus: requiredFocus, cefr: cefr)
+    }
+
+    /// Shared usability gate used by generation and sentence-validation parsers.
+    public static func gradedText(
+        from draft: PassageDraft,
+        requiredFocus: [String],
+        cefr: CEFRLevel
+    ) -> GradedText? {
+        guard isUsable(draft, requiredFocus: requiredFocus) else { return nil }
         return makeText(from: draft, requiredFocus: requiredFocus, cefr: cefr)
     }
-
-    private static func decode(_ raw: String) -> PassageDraft? {
-        let trimmed = strip(raw)
-        if let data = trimmed.data(using: .utf8),
-           let draft = try? JSONDecoder().decode(PassageDraft.self, from: data) {
-            return draft
-        }
-        if let slice = extractJSON(trimmed),
-           let data = slice.data(using: .utf8),
-           let draft = try? JSONDecoder().decode(PassageDraft.self, from: data) {
-            return draft
-        }
-        return nil
-    }
-
-    private static let nonPossessableFocus: Set<String> = [
-        "kes", "kuidas", "ka", "mitte", "ära", "kõik", "välja", "tema",
-        "mis", "kas", "kui", "et", "aga", "oma", "siis", "nii", "ja", "ei",
-    ]
 
     private static func isUsable(_ draft: PassageDraft, requiredFocus: [String]) -> Bool {
         let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -145,7 +148,7 @@ public enum PassageGenerationParser {
         }
         let wordCount = EstonianTokenizer.tokenize(body).filter(\.isWord).count
         // Prefer speakable sentences; reject tiny stubs like "Mul on ema."
-        if wordCount < 6 || wordCount > 20 {
+        if wordCount < minimumWordCount || wordCount > maximumWordCount {
             return false
         }
         if looksLikeNonsensePossession(body: body, gloss: gloss, requiredFocus: requiredFocus) {
@@ -158,9 +161,9 @@ public enum PassageGenerationParser {
                 || bodyLemmas.contains(where: { $0.hasPrefix(key) || key.hasPrefix($0) })
                 || body.lowercased().contains(focus.lowercased())
         }
-        // Require the focus word for single-word practice.
-        let need = max(1, requiredFocus.count)
-        return hits.count >= need
+        // Require every focus lemma for single-word (or multi-word) practice.
+        let minimumRequiredFocusHits = max(1, requiredFocus.count)
+        return hits.count >= minimumRequiredFocusHits
     }
 
     /// Catch frames like "Mul on kes" / "I have who" that are grammatical-ish but useless.
@@ -217,19 +220,5 @@ public enum PassageGenerationParser {
     private static func looksLikeMetaWordList(_ text: String) -> Bool {
         let lowered = text.lowercased()
         return metaListFragments.contains { lowered.contains($0) }
-    }
-
-    private static func strip(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.hasPrefix("```") {
-            result = result.replacingOccurrences(of: "```json", with: "")
-            result = result.replacingOccurrences(of: "```", with: "")
-        }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func extractJSON(_ text: String) -> String? {
-        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") else { return nil }
-        return String(text[start...end])
     }
 }

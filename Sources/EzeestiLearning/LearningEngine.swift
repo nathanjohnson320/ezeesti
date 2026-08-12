@@ -1,11 +1,14 @@
 import Foundation
+import Observation
 import EzeestiCore
 import EzeestiASR
 import EzeestiLLM
 import EzeestiTTS
 
+/// Coordinates graded reading, passage generation, ASR grading, and vocab updates.
+@Observable
 @MainActor
-public final class LearningEngine: ObservableObject {
+public final class LearningEngine {
     public enum Phase: Equatable {
         case idle
         case reading
@@ -19,26 +22,32 @@ public final class LearningEngine: ObservableObject {
         case error(String)
     }
 
-    @Published public private(set) var phase: Phase = .idle
-    @Published public private(set) var selectedText: GradedText?
-    @Published public private(set) var familiarity: TextFamiliarityReport?
-    @Published public private(set) var flaggedTokenIndexes: Set<Int> = []
-    @Published public private(set) var selectedTokenIndex: Int?
-    @Published public private(set) var selectedWord: WordLookup?
-    @Published public private(set) var isGeneratingGloss: Bool = false
-    @Published public private(set) var isGeneratingPassage: Bool = false
-    @Published public private(set) var generationDetail: String = ""
-    @Published public private(set) var glossSource: String? = nil
-    @Published public private(set) var mustUseWords: [String] = []
-    @Published public private(set) var duePreview: [VocabCard] = []
-    @Published public private(set) var dueCount: Int = 0
-    @Published public private(set) var progress: LearnerProgress = .empty
-    @Published public private(set) var lastTranscript: String = ""
-    @Published public private(set) var lastSummaryFeedback: SpokenSummaryFeedback?
-    @Published public private(set) var speakPrompt: String = ""
-    @Published public private(set) var isSpeakingCorrection: Bool = false
-    @Published public private(set) var speakingDetail: String = ""
-    @Published public private(set) var lastASRError: String?
+    /// Passage prompts stay at A1–A2 until higher-band templates are tuned.
+    private static let maxPassageCEFR: CEFRLevel = .a2
+    private static let passageRetryTemperatures: [Double] = [0.2, 0.55, 0.85]
+
+    public private(set) var phase: Phase = .idle
+    public private(set) var selectedText: GradedText?
+    public private(set) var familiarity: TextFamiliarityReport?
+    public private(set) var flaggedTokenIndexes: Set<Int> = []
+    public private(set) var selectedTokenIndex: Int?
+    public private(set) var selectedWord: WordLookup?
+    public private(set) var isGeneratingGloss: Bool = false
+    public private(set) var isGeneratingPassage: Bool = false
+    public private(set) var generationDetail: String = ""
+    public private(set) var glossSource: String? = nil
+    public private(set) var mustUseWords: [String] = []
+    public private(set) var duePreview: [VocabCard] = []
+    public private(set) var dueCount: Int = 0
+    public private(set) var progress: LearnerProgress = .empty
+    public private(set) var lastTranscript: String = ""
+    public private(set) var lastSummaryFeedback: SpokenSummaryFeedback?
+    public private(set) var speakPrompt: String = ""
+    public private(set) var isSpeakingCorrection: Bool = false
+    public private(set) var speakingDetail: String = ""
+    public private(set) var lastASRError: String?
+    /// Non-fatal TTS warmup failure surfaced for UI / later speak attempts.
+    public private(set) var lastSpeakerError: String?
 
     public let vocab: VocabStore
     public let recorder: MicrophoneRecorder
@@ -97,32 +106,43 @@ public final class LearningEngine: ObservableObject {
         }
     }
 
-    public func bootstrap() {
+    /// Seeds lexicon/vocab cleanup, refreshes progress, and warms TTS (failures are recorded, not swallowed).
+    public func bootstrap() async {
         do {
             LexiconCatalog.shared.loadBundledIfNeeded()
             WordGlossCatalog.loadBundledIfNeeded()
-            _ = try vocab.seedLexiconFromBundleIfNeeded()
-            try vocab.clearAssumedSeedVocabularyIfNeeded()
-            refreshProgress()
+            _ = try await vocab.seedLexiconFromBundleIfNeeded()
+            try await vocab.clearAssumedSeedVocabularyIfNeeded()
+            try refreshProgress()
             if selectedText == nil {
                 continueRecommendedReading()
             }
-            Task { try? await speaker.prepare() }
+            do {
+                try await speaker.prepare()
+                lastSpeakerError = nil
+            } catch {
+                lastSpeakerError = error.localizedDescription
+            }
         } catch {
             phase = .error(error.localizedDescription)
         }
     }
 
-    public func refreshProgress() {
-        progress = (try? vocab.progressSnapshot()) ?? .empty
+    public func refreshProgress() throws {
+        progress = try vocab.progressSnapshot()
         dueCount = progress.dueCount
-        duePreview = (try? vocab.dueCards(limit: 8)) ?? []
+        duePreview = try vocab.dueCards(limit: 8)
     }
 
     /// Draft a fresh sentence from the next unknown / due lemmas.
     public func continueRecommendedReading() {
         preferredDueFocus = []
-        refreshProgress()
+        do {
+            try refreshProgress()
+        } catch {
+            phase = .error(error.localizedDescription)
+            return
+        }
         generationTask?.cancel()
         generationTask = Task { await generateAndSelectNextPassage() }
     }
@@ -137,7 +157,7 @@ public final class LearningEngine: ObservableObject {
                 due.insert(key, at: 0)
             }
             preferredDueFocus = Array(due.prefix(1))
-            refreshProgress()
+            try refreshProgress()
             generationTask?.cancel()
             generationTask = Task { await generateAndSelectNextPassage() }
         } catch {
@@ -157,11 +177,7 @@ public final class LearningEngine: ObservableObject {
 
         do {
             let known = try vocab.knownLemmas()
-            let learning = Set(
-                try vocab.fetchAll()
-                    .filter { $0.familiarity == .learning }
-                    .map(\.lemma)
-            )
+            let learning = try vocab.learningLemmas()
             let dueLemmas: [String]
             if preferredDueFocus.isEmpty {
                 dueLemmas = try vocab.dueCards(limit: 1).map(\.lemma)
@@ -196,7 +212,7 @@ public final class LearningEngine: ObservableObject {
                 }
             }
 
-            let cefr: CEFRLevel = progress.workingLevel == .a1 ? .a1 : .a2
+            let cefr = passageGenerationLevel
             let prompt = PassageGenerationPrompt(
                 cefr: cefr,
                 focusLemmas: focus,
@@ -263,8 +279,6 @@ public final class LearningEngine: ObservableObject {
         )
     }
 
-    private static let passageRetryTemperatures: [Double] = [0.2, 0.55, 0.85]
-
     /// Feed the draft back through the model; accept a rewrite if the draft is weak.
     private func validateSentence(
         _ draft: GradedText,
@@ -290,9 +304,12 @@ public final class LearningEngine: ObservableObject {
             user: prompt.user,
             maxTokens: 220
         )
-        // The draft already cleared the generation gates; an unusable review
-        // response means the reviewer failed, not the sentence.
-        return SentenceValidationParser.parse(raw, requiredFocus: focus, cefr: cefr) ?? draft
+        if let validated = SentenceValidationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
+            return validated
+        }
+        // Draft already cleared generation gates; unusable reviewer JSON keeps the draft.
+        generationDetail = "Sentence review unusable — keeping draft."
+        return draft
     }
 
     /// Wipe known/learning progress and draft a fresh first sentence.
@@ -315,7 +332,7 @@ public final class LearningEngine: ObservableObject {
             lastTranscript = ""
             lastASRError = nil
             speakPrompt = ""
-            refreshProgress()
+            try refreshProgress()
             continueRecommendedReading()
         } catch {
             phase = .error(error.localizedDescription)
@@ -338,8 +355,12 @@ public final class LearningEngine: ObservableObject {
             phase = .idle
             return
         }
-        recomputeFamiliarity(for: text)
-        phase = .reading
+        do {
+            try recomputeFamiliarity(for: text)
+            phase = .reading
+        } catch {
+            phase = .error(error.localizedDescription)
+        }
     }
 
     /// Tap a word to inspect definition; does not add to review.
@@ -384,12 +405,17 @@ public final class LearningEngine: ObservableObject {
             lemma: entry?.lemma ?? EstonianTokenizer.normalize(token.surface),
             contextSentence: selectedText?.body ?? "",
             cefr: entry?.cefr,
-            pos: entry?.pos ?? ""
+            pos: entry?.pos
         )
 
         do {
             let raw = try await languageModel.complete(system: prompt.system, user: prompt.user)
-            guard let gloss = WordGlossParser.parse(raw) else { return }
+            guard let gloss = WordGlossParser.parse(raw) else {
+                if selectedTokenIndex == tokenIndex {
+                    generationDetail = "Gloss parse failed for \(token.surface)"
+                }
+                return
+            }
             let source = "estllm"
             try vocab.saveGloss(forSurface: token.surface, glossEnglish: gloss, source: source)
             guard selectedTokenIndex == tokenIndex else { return }
@@ -398,6 +424,8 @@ public final class LearningEngine: ObservableObject {
         } catch {
             guard selectedTokenIndex == tokenIndex else { return }
             selectedWord = lookup(token: token, tokenIndex: tokenIndex)
+            lastSpeakerError = nil
+            generationDetail = error.localizedDescription
         }
     }
 
@@ -438,7 +466,12 @@ public final class LearningEngine: ObservableObject {
         lastSummaryFeedback = nil
         lastTranscript = ""
         lastASRError = nil
-        refreshProgress()
+        do {
+            try refreshProgress()
+        } catch {
+            phase = .error(error.localizedDescription)
+            return
+        }
         await beginRecording(next: .recordingSummary)
     }
 
@@ -479,7 +512,7 @@ public final class LearningEngine: ObservableObject {
             lastSummaryFeedback = feedback
             try applyVocabOutcome(feedback: feedback, text: text)
 
-            refreshProgress()
+            try refreshProgress()
             phase = feedback.verdict == .correct ? .completed : .summaryFeedback
         } catch {
             lastASRError = error.localizedDescription
@@ -497,10 +530,16 @@ public final class LearningEngine: ObservableObject {
             speakingDetail = ""
         }
         do {
-            speakingDetail = "Playing model answer…"
+            if let lastSpeakerError {
+                speakingDetail = "Voice warmup issue: \(lastSpeakerError). Retrying…"
+            } else {
+                speakingDetail = "Playing model answer…"
+            }
             try await speaker.speak(correction, languageCode: "et-EE")
+            lastSpeakerError = nil
         } catch {
             speakingDetail = error.localizedDescription
+            lastSpeakerError = error.localizedDescription
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
     }
@@ -559,17 +598,33 @@ public final class LearningEngine: ObservableObject {
         isGeneratingGloss = false
         glossSource = nil
         mustUseWords = []
-        refreshProgress()
+        do {
+            try refreshProgress()
+        } catch {
+            phase = .error(error.localizedDescription)
+            return
+        }
         if advance {
             continueRecommendedReading()
             return
         }
         if let text = selectedText {
-            recomputeFamiliarity(for: text)
-            phase = .reading
+            do {
+                try recomputeFamiliarity(for: text)
+                phase = .reading
+            } catch {
+                phase = .error(error.localizedDescription)
+            }
         } else {
             continueRecommendedReading()
         }
+    }
+
+    private var passageGenerationLevel: CEFRLevel {
+        let levels = CEFRLevel.allCases
+        let workingIdx = levels.firstIndex(of: progress.workingLevel) ?? 0
+        let maxIdx = levels.firstIndex(of: Self.maxPassageCEFR) ?? 1
+        return levels[min(workingIdx, maxIdx)]
     }
 
     private func applyVocabOutcome(feedback: SpokenSummaryFeedback, text: GradedText) throws {
@@ -611,16 +666,26 @@ public final class LearningEngine: ObservableObject {
             guard token.isWord else { continue }
             set.insert(EstonianTokenizer.normalize(token.surface))
         }
-        // Also match focus lemmas if the flagged surface is an inflection.
+        // Map flagged surfaces onto focus lemmas with bounded near-match (not open-ended hasPrefix).
         let focusKeys = Set(text.focusWords.map { EstonianTokenizer.normalize($0) })
         if set.isEmpty { return set }
         var expanded = set
         for focus in focusKeys {
-            if set.contains(where: { $0.hasPrefix(focus) || focus.hasPrefix($0) || $0 == focus }) {
+            if set.contains(where: { lemmasNearlyMatch($0, focus) }) {
                 expanded.insert(focus)
             }
         }
         return expanded
+    }
+
+    /// Exact match, or short inflectional near-miss (length delta ≤ 2, stem ≥ 3).
+    private func lemmasNearlyMatch(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        guard min(a.count, b.count) >= 3 else { return false }
+        if a.hasPrefix(b) || b.hasPrefix(a) {
+            return abs(a.count - b.count) <= 2
+        }
+        return false
     }
 
     private func lookup(token: TextToken, tokenIndex: Int) -> WordLookup {
@@ -644,8 +709,8 @@ public final class LearningEngine: ObservableObject {
         )
     }
 
-    private func recomputeFamiliarity(for text: GradedText) {
-        let known = (try? vocab.knownLemmas()) ?? GradedTextCatalog.loadSeedKnownLemmas()
+    private func recomputeFamiliarity(for text: GradedText) throws {
+        let known = try vocab.knownLemmas()
         familiarity = GradedTextCatalog.familiarity(text: text, knownLemmas: known)
     }
 }

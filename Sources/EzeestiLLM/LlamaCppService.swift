@@ -4,18 +4,25 @@ import Darwin
 
 /// In-process EstLLM via `libEzeestiLlama.dylib` (dlopen, RTLD_LOCAL).
 /// Unloads weights after each completion to leave RAM/GPU for Whisper / Neurokõne.
-public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
+///
+/// Actor isolation serializes dylib/Metal access (one completion at a time).
+/// Call `shutdown()` explicitly on app terminate — do not rely on deinit for Metal teardown.
+public actor LlamaCppService: LanguageModeling {
+    /// Path to the EstLLM GGUF weights.
     public let modelPath: URL
+    /// Directory containing `libEzeestiLlama.dylib` and deps.
     public let libDir: URL
+    /// llama.cpp context size passed to `ezeesti_llama_load`.
     public let contextSize: Int
+    /// Default sampling temperature when callers omit an override.
     public let temperature: Double
 
-    private let lock = NSLock()
     private var dylib: UnsafeMutableRawPointer?
     private var loadFn: LoadFn?
     private var unloadFn: UnloadFn?
     private var completeFn: CompleteFn?
 
+    // C ABI must match `native/llama` exports; dlsym cannot verify signatures at runtime.
     private typealias LoadFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32, UnsafeMutablePointer<CChar>?, Int32) -> Int32
     private typealias UnloadFn = @convention(c) () -> Void
     private typealias CompleteFn = @convention(c) (
@@ -34,96 +41,12 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         self.temperature = temperature
     }
 
-    deinit {
-        // Explicit `shutdown()` is preferred (app terminate). This is a last-resort sync unload
-        // if the instance is released without that call; avoid async hops from deinit.
-        shutdownSync()
-    }
-
     public func complete(
         system: String,
         user: String,
         maxTokens: Int = 160,
         temperature: Double? = nil
     ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let text = try self.completeSync(
-                        system: system,
-                        user: user,
-                        maxTokens: maxTokens,
-                        temperature: temperature ?? self.temperature
-                    )
-                    continuation.resume(returning: text)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    /// Load EstLLM into GPU once, then unload weights (dylib stays) so first tutoring is faster.
-    public func warmup() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try self.ensureSymbols()
-                    self.lock.lock()
-                    defer { self.lock.unlock() }
-                    guard let loadFn = self.loadFn else {
-                        throw EzeestiError.llmFailed("llama symbols missing")
-                    }
-                    var err = [CChar](repeating: 0, count: 1024)
-                    let rc = self.modelPath.path.withCString { modelC in
-                        self.libDir.path.withCString { libC in
-                            loadFn(libC, modelC, Int32(self.contextSize), &err, Int32(err.count))
-                        }
-                    }
-                    if rc != 0 {
-                        throw EzeestiError.llmFailed(String(cString: err))
-                    }
-                    // Drop weights again so RAM is free for practice; OS/Metal caches stay hot.
-                    self.unloadFn?()
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    /// Drop model weights (also called after each completion). Keeps dylib loaded.
-    public func unload() {
-        lock.lock()
-        unloadFn?()
-        lock.unlock()
-    }
-
-    /// Free model + close llama/ggml dylibs while Metal is still usable (app terminate).
-    public func shutdown() async {
-        shutdownSync()
-    }
-
-    private func shutdownSync() {
-        lock.lock()
-        defer { lock.unlock() }
-        unloadFn?()
-        loadFn = nil
-        unloadFn = nil
-        completeFn = nil
-        if let handle = dylib {
-            dylib = nil
-            dlclose(handle)
-        }
-    }
-
-    private func completeSync(
-        system: String,
-        user: String,
-        maxTokens: Int,
-        temperature: Double
-    ) throws -> String {
         try ensureSymbols()
 
         let prompt = """
@@ -135,11 +58,7 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
 
         """
 
-        lock.lock()
-        defer {
-            unloadFn?()
-            lock.unlock()
-        }
+        defer { unloadFn?() }
 
         guard let loadFn, let completeFn else {
             throw EzeestiError.llmFailed("llama symbols missing")
@@ -152,16 +71,17 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
             }
         }
         if loadRC != 0 {
-            throw EzeestiError.llmFailed(String(cString: err))
+            throw EzeestiError.llmFailed(Self.stringFromCBuffer(err))
         }
 
         let tokenBudget = max(32, min(maxTokens, 512))
+        let samplingTemperature = Float(temperature ?? self.temperature)
         var out = [CChar](repeating: 0, count: 32_768)
         let rc = prompt.withCString { promptC in
             completeFn(
                 promptC,
                 Int32(tokenBudget),
-                Float(temperature),
+                samplingTemperature,
                 &out,
                 Int32(out.count),
                 &err,
@@ -169,10 +89,10 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
             )
         }
         if rc != 0 {
-            throw EzeestiError.llmFailed(String(cString: err))
+            throw EzeestiError.llmFailed(Self.stringFromCBuffer(err))
         }
 
-        let raw = String(cString: out)
+        let raw = Self.stringFromCBuffer(out)
         let cleaned = raw
             .components(separatedBy: "<|eot_id|>")
             .first?
@@ -184,9 +104,43 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         return cleaned
     }
 
+    /// Load EstLLM into GPU once, then unload weights (dylib stays) so first tutoring is faster.
+    public func warmup() async throws {
+        try ensureSymbols()
+        guard let loadFn else {
+            throw EzeestiError.llmFailed("llama symbols missing")
+        }
+        var err = [CChar](repeating: 0, count: 1024)
+        let rc = modelPath.path.withCString { modelC in
+            libDir.path.withCString { libC in
+                loadFn(libC, modelC, Int32(contextSize), &err, Int32(err.count))
+            }
+        }
+        if rc != 0 {
+            throw EzeestiError.llmFailed(Self.stringFromCBuffer(err))
+        }
+        // Drop weights again so RAM is free for practice; OS/Metal caches stay hot.
+        unloadFn?()
+    }
+
+    /// Drop model weights (also called after each completion). Keeps dylib loaded.
+    public func unload() {
+        unloadFn?()
+    }
+
+    /// Free model + close llama/ggml dylibs while Metal is still usable (app terminate).
+    public func shutdown() {
+        unloadFn?()
+        loadFn = nil
+        unloadFn = nil
+        completeFn = nil
+        if let handle = dylib {
+            dylib = nil
+            dlclose(handle)
+        }
+    }
+
     private func ensureSymbols() throws {
-        lock.lock()
-        defer { lock.unlock() }
         if dylib != nil { return }
 
         let dylibURL = libDir.appendingPathComponent("libEzeestiLlama.dylib")
@@ -215,5 +169,12 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
         loadFn = unsafeBitCast(loadSym, to: LoadFn.self)
         unloadFn = unsafeBitCast(unloadSym, to: UnloadFn.self)
         completeFn = unsafeBitCast(completeSym, to: CompleteFn.self)
+    }
+
+    /// Decodes a zero-filled CChar buffer without reading past the first NUL or buffer end.
+    private static func stringFromCBuffer(_ buffer: [CChar]) -> String {
+        let end = buffer.firstIndex(of: 0) ?? buffer.count
+        let bytes = buffer[..<end].map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }

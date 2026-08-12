@@ -1,5 +1,6 @@
 import Foundation
 
+/// Snapshot of a learner’s known/learning coverage across CEFR bands.
 public struct LearnerProgress: Sendable, Equatable {
     public let knownCount: Int
     public let learningCount: Int
@@ -41,7 +42,8 @@ public struct LearnerProgress: Sendable, Equatable {
         lexiconByLevel: [:]
     )
 
-    /// Working level = first CEFR band where known coverage of tagged lexicon is below `mastery`.
+    /// Working level = first CEFR band whose known coverage is below `mastery`.
+    /// Higher bands are only considered after lower bands clear the threshold.
     public static func estimate(
         knownLemmas: Set<String>,
         learningCount: Int,
@@ -91,30 +93,33 @@ public struct LearnerProgress: Sendable, Equatable {
         )
     }
 
-    /// Pick one teachable lemma for the next read-aloud sentence.
+    /// Pick teachable lemmas for the next read-aloud sentence.
     /// Prefers a due word first, then already-learning, then an unknown high-frequency content word.
+    ///
+    /// - Parameter lexicon: Catalog used for lookups (defaults to the shared bundled lexicon).
     public static func targetLemmasForPassage(
         workingLevel: CEFRLevel,
         knownLemmas: Set<String>,
         learningLemmas: Set<String> = [],
         dueLemmas: [String] = [],
         alreadyFocused: Set<String> = [],
-        limit: Int = 1
+        limit: Int = 1,
+        lexicon: LexiconCatalog = .shared
     ) -> [LexiconEntry] {
-        LexiconCatalog.shared.loadBundledIfNeeded()
+        lexicon.loadBundledIfNeeded()
         let cap = max(1, limit)
         var picked: [LexiconEntry] = []
         var pickedKeys = Set<String>()
+        let functionWords = GradedTextCatalog.baselineFunctionWords
 
         for raw in dueLemmas {
             guard picked.count < cap else { break }
             let key = EstonianTokenizer.normalize(raw)
             guard !pickedKeys.contains(key) else { continue }
-            if let entry = LexiconCatalog.shared.entry(forSurface: raw)
-                ?? LexiconCatalog.shared.entry(forSurface: key) {
+            if let entry = lexicon.entry(forSurface: raw) ?? lexicon.entry(forSurface: key) {
                 picked.append(entry)
             } else {
-                picked.append(LexiconEntry(lemma: key, cefr: workingLevel, pos: "", freqRank: nil))
+                picked.append(LexiconEntry(lemma: key, cefr: workingLevel, pos: nil, freqRank: nil))
             }
             pickedKeys.insert(key)
         }
@@ -133,49 +138,46 @@ public struct LearnerProgress: Sendable, Equatable {
 
         var pool: [LexiconEntry] = []
         for band in bands {
-            pool.append(contentsOf: LexiconCatalog.shared.lemmas(at: band))
+            pool.append(contentsOf: lexicon.lemmas(at: band))
         }
 
-        let ranked = pool
-            .filter { entry in
-                let key = EstonianTokenizer.normalize(entry.lemma)
-                if pickedKeys.contains(key) { return false }
-                // Due known words are already handled above; skip other known lemmas.
-                if knownLemmas.contains(key) { return false }
-                // Skip ultra-short glue words (ma, ja, on…) unless learning.
-                if GradedTextCatalog.baselineFunctionWords.contains(key), !learningLemmas.contains(key) {
-                    return false
-                }
-                // Prefer content words; allow function words only if already learning them.
-                if !entry.isPassageFocusCandidate, !learningLemmas.contains(key) {
-                    return false
-                }
-                return true
-            }
-            .sorted { lhs, rhs in
-                let lKey = EstonianTokenizer.normalize(lhs.lemma)
-                let rKey = EstonianTokenizer.normalize(rhs.lemma)
-                let lLearning = learningLemmas.contains(lKey)
-                let rLearning = learningLemmas.contains(rKey)
-                if lLearning != rLearning { return lLearning && !rLearning }
-                let lContent = lhs.isPassageFocusCandidate
-                let rContent = rhs.isPassageFocusCandidate
-                if lContent != rContent { return lContent && !rContent }
-                let lUsed = alreadyFocused.contains(lKey)
-                let rUsed = alreadyFocused.contains(rKey)
-                if lUsed != rUsed { return !lUsed && rUsed }
-                let lFreq = lhs.freqRank ?? 50_000
-                let rFreq = rhs.freqRank ?? 50_000
-                if lFreq != rFreq { return lFreq < rFreq }
-                return lhs.lemma < rhs.lemma
-            }
+        struct Ranked {
+            let entry: LexiconEntry
+            let key: String
+            let isLearning: Bool
+            let isContent: Bool
+            let alreadyUsed: Bool
+            let freq: Int
+        }
 
-        for entry in ranked {
-            guard picked.count < cap else { break }
+        let ranked: [Ranked] = pool.compactMap { entry in
             let key = EstonianTokenizer.normalize(entry.lemma)
-            guard !pickedKeys.contains(key) else { continue }
-            picked.append(entry)
-            pickedKeys.insert(key)
+            if pickedKeys.contains(key) { return nil }
+            if knownLemmas.contains(key) { return nil }
+            if functionWords.contains(key), !learningLemmas.contains(key) { return nil }
+            if !entry.isPassageFocusCandidate, !learningLemmas.contains(key) { return nil }
+            return Ranked(
+                entry: entry,
+                key: key,
+                isLearning: learningLemmas.contains(key),
+                isContent: entry.isPassageFocusCandidate,
+                alreadyUsed: alreadyFocused.contains(key),
+                freq: entry.freqRank ?? 50_000
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.isLearning != rhs.isLearning { return lhs.isLearning && !rhs.isLearning }
+            if lhs.isContent != rhs.isContent { return lhs.isContent && !rhs.isContent }
+            if lhs.alreadyUsed != rhs.alreadyUsed { return !lhs.alreadyUsed && rhs.alreadyUsed }
+            if lhs.freq != rhs.freq { return lhs.freq < rhs.freq }
+            return lhs.entry.lemma < rhs.entry.lemma
+        }
+
+        for item in ranked {
+            guard picked.count < cap else { break }
+            guard !pickedKeys.contains(item.key) else { continue }
+            picked.append(item.entry)
+            pickedKeys.insert(item.key)
         }
 
         return picked

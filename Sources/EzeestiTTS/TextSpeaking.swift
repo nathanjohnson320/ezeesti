@@ -1,9 +1,10 @@
 import AVFoundation
 import Foundation
 import EzeestiCore
-import ObjectiveC
 
+/// Offline text-to-speech used by tutoring and learning flows.
 public protocol TextSpeaking: Sendable {
+    /// Speak `text`. `languageCode` is reserved for multi-locale backends (BCP-47).
     func speak(_ text: String, languageCode: String) async throws
     /// Prefetch models / start persistent worker so the first hear is not a 30s cold start.
     func prepare() async throws
@@ -14,17 +15,22 @@ extension TextSpeaking {
 }
 
 /// Keeps one Neurokõne Python process alive so TensorFlow/HiFi-GAN load once per app launch.
-actor NeurokoneSession {
-    static let shared = NeurokoneSession()
+/// Injected by `NeurokoneTTSService` (no process-global singleton).
+public actor NeurokoneSession {
+    /// Default Neurokõne voice id used by the CLI worker.
+    public static let defaultVoiceID = "mari"
 
     private var process: Process?
     private var stdinHandle: FileHandle?
-    private var stdoutHandle: FileHandle?
+    private var stderrHandle: FileHandle?
+    private var stdoutReader: FileHandleLineReader?
     private var binaryPath: URL?
-    private var defaultSpeaker = "mari"
+    private var defaultSpeaker = NeurokoneSession.defaultVoiceID
     private var ready = false
 
-    func prepare(binaryPath: URL, speaker: String = "mari") async throws {
+    public init() {}
+
+    public func prepare(binaryPath: URL, speaker: String = NeurokoneSession.defaultVoiceID) async throws {
         defaultSpeaker = speaker
         if ready, self.binaryPath == binaryPath, process?.isRunning == true {
             try await ping()
@@ -33,7 +39,7 @@ actor NeurokoneSession {
         try await start(binaryPath: binaryPath, speaker: speaker)
     }
 
-    func synthesize(text: String, outURL: URL, speaker: String?, speed: Double) async throws {
+    public func synthesize(text: String, outURL: URL, speaker: String?, speed: Double) async throws {
         guard let binaryPath else {
             throw EzeestiError.ttsFailed("Neurokõne session not prepared")
         }
@@ -48,10 +54,10 @@ actor NeurokoneSession {
             "speed": speed,
         ]
         let line = try JSONSerialization.data(withJSONObject: payload)
-        guard var request = String(data: line, encoding: .utf8) else {
+        guard let encoded = String(data: line, encoding: .utf8) else {
             throw EzeestiError.ttsFailed("Could not encode Neurokõne request")
         }
-        request += "\n"
+        let request = encoded + "\n"
         guard let stdinHandle, let data = request.data(using: .utf8) else {
             throw EzeestiError.ttsFailed("Neurokõne stdin unavailable")
         }
@@ -59,7 +65,7 @@ actor NeurokoneSession {
 
         let response: [String: Any]
         do {
-            response = try await readJSONLine()
+            response = try await readJSONObject()
         } catch {
             // A leaked log line can desync the JSON protocol — recycle the worker.
             stop()
@@ -80,7 +86,7 @@ actor NeurokoneSession {
             throw EzeestiError.ttsFailed("Neurokõne stdin unavailable")
         }
         try stdinHandle.write(contentsOf: data)
-        let response = try await readJSONLine()
+        let response = try await readJSONObject()
         guard (response["ok"] as? Bool) == true else {
             throw EzeestiError.ttsFailed("Neurokõne ping failed")
         }
@@ -108,128 +114,266 @@ actor NeurokoneSession {
 
         self.process = process
         self.stdinHandle = stdin.fileHandleForWriting
-        self.stdoutHandle = stdout.fileHandleForReading
+        self.stderrHandle = stderr.fileHandleForReading
+        // Drain stderr so the pipe does not fill and stall the worker.
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
 
-        // Wait until models are loaded ("READY\n"), reading stderr for progress.
-        try await waitUntilReady(stdout: stdout, stderr: stderr, process: process)
+        self.stdoutReader = FileHandleLineReader(handle: stdout.fileHandleForReading)
+
+        // Wait until models are loaded ("READY\n").
+        try await waitUntilReady(timeout: 180)
         ready = true
     }
 
-    private func waitUntilReady(stdout: Pipe, stderr: Pipe, process: Process) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var buffer = Data()
-                let deadline = Date().addingTimeInterval(180)
-                while process.isRunning, Date() < deadline {
-                    // Non-blocking-ish drain so stderr does not fill the pipe.
-                    let errChunk = stderr.fileHandleForReading.availableData
-                    _ = errChunk
-
-                    let chunk = stdout.fileHandleForReading.availableData
-                    if chunk.isEmpty {
-                        Thread.sleep(forTimeInterval: 0.05)
-                        continue
-                    }
-                    buffer.append(chunk)
-                    if let text = String(data: buffer, encoding: .utf8),
-                       text.split(whereSeparator: \.isNewline).contains(where: { $0 == "READY" }) {
-                        continuation.resume()
-                        return
-                    }
-                }
-                let err = String(data: stderr.fileHandleForReading.availableData, encoding: .utf8) ?? ""
-                continuation.resume(
-                    throwing: EzeestiError.ttsFailed(
-                        err.isEmpty ? "Neurokõne worker exited before READY" : err
-                    )
-                )
+    private func waitUntilReady(timeout: TimeInterval) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if process?.isRunning != true {
+                throw EzeestiError.ttsFailed("Neurokõne worker exited before READY")
             }
+            let line = try await nextStdoutLine(deadline: deadline)
+            if line == "READY" {
+                return
+            }
+        }
+        throw EzeestiError.ttsFailed("Neurokõne worker exited before READY")
+    }
+
+    /// Reads the next protocol JSON object from stdout, skipping log noise.
+    private func readJSONObject() async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(120)
+        while Date() < deadline {
+            let line = try await nextStdoutLine(deadline: deadline)
+            // Skip protocol noise and library log lines that leak onto stdout
+            // (e.g. "INFO:synthesizer.py:76: Request received: …").
+            if line.isEmpty || line == "READY" || !line.hasPrefix("{") {
+                continue
+            }
+            return try Self.parseProtocolObject(line)
+        }
+        throw EzeestiError.ttsFailed("Neurokõne timed out waiting for JSON response")
+    }
+
+    private func nextStdoutLine(deadline: Date) async throws -> String {
+        guard let stdoutReader else {
+            throw EzeestiError.ttsFailed("Neurokõne stdout unavailable")
+        }
+        do {
+            return try await stdoutReader.nextLine(deadline: deadline)
+        } catch is FileHandleLineReader.TimeoutError {
+            if process?.isRunning != true {
+                throw EzeestiError.ttsFailed("Neurokõne worker died")
+            }
+            throw EzeestiError.ttsFailed("Neurokõne timed out waiting for stdout")
+        } catch is FileHandleLineReader.ClosedError {
+            throw EzeestiError.ttsFailed("Neurokõne worker died")
         }
     }
 
-    private func readJSONLine() async throws -> [String: Any] {
-        guard let stdoutHandle else {
-            throw EzeestiError.ttsFailed("Neurokõne stdout unavailable")
+    private static func parseProtocolObject(_ line: String) throws -> [String: Any] {
+        guard let data = line.data(using: .utf8) else {
+            throw EzeestiError.ttsFailed("Bad Neurokõne response encoding: \(line)")
         }
-        let processRef = process
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var buffer = Data()
-                let deadline = Date().addingTimeInterval(120)
-                while Date() < deadline {
-                    let chunk = stdoutHandle.availableData
-                    if chunk.isEmpty {
-                        if processRef?.isRunning != true {
-                            continuation.resume(throwing: EzeestiError.ttsFailed("Neurokõne worker died"))
-                            return
-                        }
-                        Thread.sleep(forTimeInterval: 0.02)
-                        continue
-                    }
-                    buffer.append(chunk)
-                    while let text = String(data: buffer, encoding: .utf8),
-                          let newline = text.firstIndex(of: "\n") {
-                        let line = String(text[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
-                        let rest = String(text[text.index(after: newline)...])
-                        buffer = Data(rest.utf8)
-
-                        // Skip protocol noise and library log lines that leak onto stdout
-                        // (e.g. "INFO:synthesizer.py:76: Request received: …").
-                        if line.isEmpty || line == "READY" || !line.hasPrefix("{") {
-                            continue
-                        }
-                        guard let data = line.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                            continuation.resume(throwing: EzeestiError.ttsFailed("Bad Neurokõne response: \(line)"))
-                            return
-                        }
-                        continuation.resume(returning: obj)
-                        return
-                    }
-                }
-                continuation.resume(throwing: EzeestiError.ttsFailed("Neurokõne timed out waiting for JSON response"))
+        do {
+            let obj = try JSONSerialization.jsonObject(with: data)
+            guard let dict = obj as? [String: Any] else {
+                throw EzeestiError.ttsFailed("Neurokõne response was not a JSON object: \(line)")
             }
+            guard dict["ok"] is Bool else {
+                throw EzeestiError.ttsFailed("Neurokõne response missing ok flag: \(line)")
+            }
+            return dict
+        } catch let error as EzeestiError {
+            throw error
+        } catch {
+            throw EzeestiError.ttsFailed("Bad Neurokõne JSON: \(line)")
         }
     }
 
     private func stop() {
         ready = false
-        try? stdinHandle?.close()
+        stdoutReader?.cancel()
+        stdoutReader = nil
+        stderrHandle?.readabilityHandler = nil
+        stderrHandle = nil
+        if let stdinHandle {
+            do {
+                try stdinHandle.close()
+            } catch {
+                // Best-effort teardown while recycling / shutting down the worker.
+            }
+        }
         process?.terminate()
         process = nil
-        stdinHandle = nil
-        stdoutHandle = nil
+        self.stdinHandle = nil
     }
 }
 
-/// Offline Neurokõne via persistent local CLI worker (TransformerTTS + HiFi-GAN).
+/// Async line reader backed by `FileHandle.readabilityHandler` (event-driven, no sleep polling).
+private final class FileHandleLineReader: @unchecked Sendable {
+    struct TimeoutError: Error {}
+    struct ClosedError: Error {}
+
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var pending: [String] = []
+    private var waiter: CheckedContinuation<String, Error>?
+    private var closed = false
+
+    init(handle: FileHandle) {
+        self.handle = handle
+        handle.readabilityHandler = { [weak self] fileHandle in
+            self?.receive(fileHandle.availableData)
+        }
+    }
+
+    func cancel() {
+        handle.readabilityHandler = nil
+        lock.lock()
+        closed = true
+        let waiter = self.waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume(throwing: ClosedError())
+    }
+
+    func nextLine(deadline: Date) async throws -> String {
+        let remaining = deadline.timeIntervalSinceNow
+        guard remaining > 0 else { throw TimeoutError() }
+
+        return try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                try await self.waitForLine()
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(remaining))
+                throw TimeoutError()
+            }
+            let line = try await group.next()!
+            group.cancelAll()
+            return line
+        }
+    }
+
+    private func waitForLine() async throws -> String {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if !pending.isEmpty {
+                    let line = pending.removeFirst()
+                    lock.unlock()
+                    continuation.resume(returning: line)
+                    return
+                }
+                if closed {
+                    lock.unlock()
+                    continuation.resume(throwing: ClosedError())
+                    return
+                }
+                waiter = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            lock.lock()
+            let waiter = self.waiter
+            self.waiter = nil
+            lock.unlock()
+            waiter?.resume(throwing: CancellationError())
+        }
+    }
+
+    private func receive(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        if chunk.isEmpty {
+            flushRemainderLocked()
+            closed = true
+            handle.readabilityHandler = nil
+            if let waiter {
+                self.waiter = nil
+                waiter.resume(throwing: ClosedError())
+            }
+            return
+        }
+
+        buffer.append(chunk)
+        while let text = String(data: buffer, encoding: .utf8),
+              let newline = text.firstIndex(of: "\n") {
+            let line = String(text[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rest = String(text[text.index(after: newline)...])
+            buffer = Data(rest.utf8)
+            deliverLocked(line)
+        }
+    }
+
+    private func deliverLocked(_ line: String) {
+        if let waiter {
+            self.waiter = nil
+            waiter.resume(returning: line)
+        } else {
+            pending.append(line)
+        }
+    }
+
+    private func flushRemainderLocked() {
+        guard !buffer.isEmpty, let text = String(data: buffer, encoding: .utf8) else { return }
+        buffer.removeAll(keepingCapacity: false)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            deliverLocked(trimmed)
+        }
+    }
+}
+
+/// Offline Neurokõne via a persistent local CLI worker (TransformerTTS + HiFi-GAN).
+/// Owns its `NeurokoneSession` so the app can inject/share one service instance.
 public struct NeurokoneTTSService: TextSpeaking {
     public let binaryPath: URL
     public let speaker: String
     public let speed: Double
 
+    private let session: NeurokoneSession
+
     public init(
         binaryPath: URL,
-        speaker: String = "mari",
+        speaker: String = NeurokoneSession.defaultVoiceID,
         speed: Double = 1.0
+    ) {
+        self.init(
+            binaryPath: binaryPath,
+            speaker: speaker,
+            speed: speed,
+            session: NeurokoneSession()
+        )
+    }
+
+    public init(
+        binaryPath: URL,
+        speaker: String,
+        speed: Double,
+        session: NeurokoneSession
     ) {
         self.binaryPath = binaryPath
         self.speaker = speaker
         self.speed = speed
+        self.session = session
     }
 
     public func prepare() async throws {
-        try await NeurokoneSession.shared.prepare(binaryPath: binaryPath, speaker: speaker)
+        try await session.prepare(binaryPath: binaryPath, speaker: speaker)
     }
 
-    public func speak(_ text: String, languageCode: String) async throws {
-        _ = languageCode
-        try await NeurokoneSession.shared.prepare(binaryPath: binaryPath, speaker: speaker)
+    /// Neurokõne is Estonian-only; `languageCode` is accepted for `TextSpeaking` compatibility.
+    public func speak(_ text: String, languageCode _: String) async throws {
+        try await session.prepare(binaryPath: binaryPath, speaker: speaker)
 
         let outURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("ezeesti-nk-\(UUID().uuidString).wav")
 
-        try await NeurokoneSession.shared.synthesize(
+        try await session.synthesize(
             text: text,
             outURL: outURL,
             speaker: speaker,
@@ -237,23 +381,26 @@ public struct NeurokoneTTSService: TextSpeaking {
         )
 
         try await WavPlayer.play(url: outURL)
-        try? FileManager.default.removeItem(at: outURL)
+        do {
+            try FileManager.default.removeItem(at: outURL)
+        } catch {
+            // Best-effort temp cleanup after playback.
+        }
     }
 }
 
+/// Plays a WAV once on the main actor, retaining the player until playback finishes.
+@MainActor
 enum WavPlayer {
-    @MainActor
     static func play(url: URL) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             do {
                 let player = try AVAudioPlayer(contentsOf: url)
-                let delegate = AudioPlayerDelegate { result in
-                    continuation.resume(with: result)
-                }
-                objc_setAssociatedObject(player, &AudioPlayerDelegate.assocKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-                AudioPlayerDelegate.retained.append(player)
-                player.delegate = delegate
+                let session = PlaybackSession(player: player, continuation: continuation)
+                PlaybackRegistry.insert(session)
+                player.delegate = session
                 guard player.play() else {
+                    PlaybackRegistry.remove(session)
                     throw EzeestiError.ttsFailed("AVAudioPlayer failed to start")
                 }
             } catch {
@@ -263,29 +410,43 @@ enum WavPlayer {
     }
 }
 
-private final class AudioPlayerDelegate: NSObject, AVAudioPlayerDelegate, @unchecked Sendable {
-    static var assocKey: UInt8 = 0
-    static var retained: [AVAudioPlayer] = []
+/// Keeps in-flight `AVAudioPlayer` sessions alive until their delegate fires.
+@MainActor
+private enum PlaybackRegistry {
+    private static var sessions: [ObjectIdentifier: PlaybackSession] = [:]
 
-    private let completion: @Sendable (Result<Void, Error>) -> Void
-    private var finished = false
+    static func insert(_ session: PlaybackSession) {
+        sessions[ObjectIdentifier(session)] = session
+    }
 
-    init(completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
-        self.completion = completion
+    static func remove(_ session: PlaybackSession) {
+        sessions[ObjectIdentifier(session)] = nil
+    }
+}
+
+@MainActor
+private final class PlaybackSession: NSObject, @preconcurrency AVAudioPlayerDelegate {
+    private let player: AVAudioPlayer
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(player: AVAudioPlayer, continuation: CheckedContinuation<Void, Error>) {
+        self.player = player
+        self.continuation = continuation
+        super.init()
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        finish(player, flag ? .success(()) : .failure(EzeestiError.ttsFailed("Playback failed")))
+        finish(flag ? .success(()) : .failure(EzeestiError.ttsFailed("Playback failed")))
     }
 
     func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        finish(player, .failure(error ?? EzeestiError.ttsFailed("Decode error")))
+        finish(.failure(error ?? EzeestiError.ttsFailed("Decode error")))
     }
 
-    private func finish(_ player: AVAudioPlayer, _ result: Result<Void, Error>) {
-        guard !finished else { return }
-        finished = true
-        AudioPlayerDelegate.retained.removeAll { $0 === player }
-        completion(result)
+    private func finish(_ result: Result<Void, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        PlaybackRegistry.remove(self)
+        continuation.resume(with: result)
     }
 }
