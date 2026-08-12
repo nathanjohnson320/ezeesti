@@ -331,6 +331,11 @@ private final class FileHandleLineReader: @unchecked Sendable {
 /// Offline Neurokõne via a persistent local CLI worker (TransformerTTS + HiFi-GAN).
 /// Owns its `NeurokoneSession` so the app can inject/share one service instance.
 public struct NeurokoneTTSService: TextSpeaking {
+    /// Rate multiplier sent to the worker: the model divides phoneme durations by it,
+    /// so values below 1 stretch speech without shifting pitch. Native-paced Estonian (1.0)
+    /// is too fast for learners to hear word boundaries; below ~0.7 the vocoder smears.
+    public static let defaultSpeed = 0.85
+
     public let binaryPath: URL
     public let speaker: String
     public let speed: Double
@@ -340,7 +345,7 @@ public struct NeurokoneTTSService: TextSpeaking {
     public init(
         binaryPath: URL,
         speaker: String = NeurokoneSession.defaultVoiceID,
-        speed: Double = 1.0
+        speed: Double = NeurokoneTTSService.defaultSpeed
     ) {
         self.init(
             binaryPath: binaryPath,

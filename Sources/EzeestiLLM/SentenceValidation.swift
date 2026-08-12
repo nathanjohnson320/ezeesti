@@ -34,6 +34,7 @@ public struct SentenceValidationPrompt {
         Validation rules:
         - body must be exactly one useful everyday sentence (not nonsense word salad).
         - Grammar must be correct Estonian at \(cefr.rawValue).
+        - Spelling must be correct Estonian dictionary forms (fix misspellings like "päikseline" for "päikeseline").
         - Meaning must be clear and natural for a learner to say aloud.
         - Every focus lemma must appear (same form or clear inflection).
         - Prefer 8–16 Estonian words. If the draft is only a 2–5 word stub, expand it into a fuller everyday sentence while keeping the focus word.

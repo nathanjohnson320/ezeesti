@@ -36,6 +36,7 @@ public struct PassageGenerationPrompt {
         - Prefer simple grammar at \(cefr.rawValue). You may use common glue words (\(knownGlueHint)).
         - Aim for 8–16 Estonian words (not a 2–4 word stub). Give enough context to say aloud comfortably.
         - Keep body under 20 Estonian words.
+        - Spell every Estonian word correctly (dictionary form or a clear inflection) — never drop letters (e.g. write "päikeseline", not "päikseline").
         - Do not wrap JSON in markdown fences.
         - Never copy example wording; invent a new everyday sentence.
         - FORBIDDEN: vocabulary lists, multi-sentence scenes, nonsense combinations, "Ma ütlen: …", "Täna ma õpin uusi sõnu", "This is good practice", or meta text about learning words.
