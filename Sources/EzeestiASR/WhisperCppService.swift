@@ -1,15 +1,25 @@
 import Foundation
-import AVFoundation
+@preconcurrency import AVFoundation
 import EzeestiCore
 import Darwin
 
 /// In-process TalTech Whisper via `libEzeestiWhisper.dylib` (dlopen, RTLD_LOCAL).
-public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
+///
+/// Actor isolation serializes dylib/Metal access (one transcription at a time).
+/// Call `shutdown()` explicitly on app terminate — do not rely on deinit for Metal teardown.
+public actor WhisperCppService: SpeechRecognizing {
+    private static let sampleRate: Double = 16_000
+    private static let minimumSampleCount = 8_000 // 0.5s at 16 kHz
+    private static let minimumRMS: Float = 0.004
+    private static let defaultLanguageCue = "Eestikeelne kõne. Lühikesed laused."
+
+    /// Path to the ggml Whisper weights.
     public let modelPath: URL
+    /// Directory containing `libEzeestiWhisper.dylib` and its deps.
     public let libDir: URL
+    /// Whisper language code (default Estonian).
     public let language: String
 
-    private let lock = NSLock()
     private var dylib: UnsafeMutableRawPointer?
     private var loadFn: LoadFn?
     private var unloadFn: UnloadFn?
@@ -29,15 +39,9 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         self.language = language
     }
 
-    deinit {
-        shutdown()
-    }
-
     /// Free Whisper context and unload Metal-backed dylibs while the process is still healthy.
     /// Call from app terminate — otherwise ggml Metal asserts during `exit` teardown.
     public func shutdown() {
-        lock.lock()
-        defer { lock.unlock() }
         unloadFn?()
         loadedModel = false
         loadFn = nil
@@ -51,18 +55,14 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
 
     /// Load Whisper weights + Metal shaders, and run a tiny silent decode so first real ASR is warm.
     public func warmup() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try self.ensureLoaded()
-                    // ~0.25s silence primes encoder/decoder kernels without needing a mic clip.
-                    let samples = [Float](repeating: 0, count: 4_000)
-                    _ = try? self.runTranscribe(samples: samples, initialPrompt: nil)
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
+        try ensureLoaded()
+        // ~0.25s silence primes encoder/decoder kernels without needing a mic clip.
+        // Warm-up decode failures are non-fatal: model is already loaded.
+        let samples = [Float](repeating: 0, count: 4_000)
+        do {
+            _ = try runTranscribe(samples: samples, initialPrompt: nil)
+        } catch {
+            // Intentionally ignore: first real decode will surface real failures.
         }
     }
 
@@ -71,32 +71,23 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         try ensureLoaded()
         var samples = try Self.loadPCM16kMono(url: audioURL)
         samples = Self.trimSilence(samples)
-        let durationSeconds = Double(samples.count) / 16_000.0
+        let durationSeconds = Double(samples.count) / Self.sampleRate
 
-        if samples.count < 8_000 {
+        if samples.count < Self.minimumSampleCount {
             throw EzeestiError.transcriptionFailed(
                 "Audio too short (\(String(format: "%.1f", durationSeconds))s) — speak a full sentence before stopping."
             )
         }
 
         let rms = Self.rms(samples)
-        if rms < 0.004 {
+        if rms < Self.minimumRMS {
             throw EzeestiError.transcriptionFailed(
                 "Audio is nearly silent — check the mic input and try again."
             )
         }
 
         let promptHint = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text: String = try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let result = try self.runTranscribe(samples: samples, initialPrompt: promptHint)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let text = try runTranscribe(samples: samples, initialPrompt: promptHint)
 
         let cleaned = TranscriptCleaner.clean(text)
         var usable = cleaned.isEmpty ? TranscriptCleaner.collapseRepeatedWords(text.trimmingCharacters(in: .whitespacesAndNewlines)) : cleaned
@@ -117,9 +108,6 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
     }
 
     private func ensureLoaded() throws {
-        lock.lock()
-        defer { lock.unlock() }
-
         if loadedModel { return }
 
         let dylibURL = libDir.appendingPathComponent("libEzeestiWhisper.dylib")
@@ -167,8 +155,6 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
     }
 
     private func runTranscribe(samples: [Float], initialPrompt: String?) throws -> String {
-        lock.lock()
-        defer { lock.unlock() }
         guard let transcribeFn else {
             throw EzeestiError.transcriptionFailed("whisper not loaded")
         }
@@ -176,9 +162,12 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         var out = [CChar](repeating: 0, count: 16_384)
         var err = [CChar](repeating: 0, count: 1_024)
         // Prefer the expected sentence as bias when grading read-aloud; otherwise a short language cue.
-        let prompt = (initialPrompt?.isEmpty == false)
-            ? initialPrompt!
-            : "Eestikeelne kõne. Lühikesed laused."
+        let prompt: String
+        if let initialPrompt, !initialPrompt.isEmpty {
+            prompt = initialPrompt
+        } else {
+            prompt = Self.defaultLanguageCue
+        }
 
         let rc = samples.withUnsafeBufferPointer { buf in
             language.withCString { langC in
@@ -232,8 +221,15 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         }
         try file.read(into: buffer)
 
-        let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
-        if format.sampleRate == 16_000, format.channelCount == 1, format.commonFormat == .pcmFormatFloat32 {
+        guard let target = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw EzeestiError.transcriptionFailed("Could not create 16 kHz mono float format")
+        }
+        if format.sampleRate == sampleRate, format.channelCount == 1, format.commonFormat == .pcmFormatFloat32 {
             let n = Int(buffer.frameLength)
             guard let ch = buffer.floatChannelData?[0] else {
                 throw EzeestiError.transcriptionFailed("Missing float channel data")
@@ -244,7 +240,7 @@ public final class WhisperCppService: SpeechRecognizing, @unchecked Sendable {
         guard let converter = AVAudioConverter(from: format, to: target) else {
             throw EzeestiError.transcriptionFailed("Could not create audio converter")
         }
-        let ratio = 16_000 / format.sampleRate
+        let ratio = sampleRate / format.sampleRate
         let outCapacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCapacity) else {
             throw EzeestiError.transcriptionFailed("Could not allocate converted buffer")

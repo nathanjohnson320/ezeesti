@@ -61,6 +61,7 @@ final class TranscriptCleanerTests: XCTestCase {
 
     func testDetectsHighSingleTokenFrequency() {
         let words = Array(repeating: "küsimust", count: 8).joined(separator: ", ")
-        XCTAssertTrue(TranscriptCleaner.looksLikeRepetitionHallucination(words))
+        let cleaned = TranscriptCleaner.clean(words)
+        XCTAssertEqual(cleaned, "", "High single-token frequency should be treated as empty / no speech")
     }
 }

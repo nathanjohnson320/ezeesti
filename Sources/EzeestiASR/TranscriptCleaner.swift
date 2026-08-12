@@ -3,7 +3,17 @@ import EzeestiCore
 
 /// Strip Whisper hallucinations common on short Estonian clips
 /// (trailing politeness, prompt echo, filler loops, and invented extra sentences).
+///
+/// Caseless `enum` is the standard Swift namespace pattern for pure static helpers.
 public enum TranscriptCleaner {
+    private static let minSentenceOverlapRatio = 0.4
+    private static let repetitionMinTokens = 6
+    private static let repetitionMaxCount = 5
+    private static let repetitionRatioMinTokens = 10
+    private static let repetitionMaxRatio = 0.35
+    private static let lowDiversityMinTokens = 12
+    private static let lowDiversityMaxUnique = 5
+
     private static let trailingHallucinations: [String] = [
         "thank you for watching",
         "thanks for watching",
@@ -37,7 +47,9 @@ public enum TranscriptCleaner {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
 
         for prefix in ["Eestikeelne kõne. Lühikesed laused.", "Eestikeelne kõne."] {
-            if text.lowercased().hasPrefix(prefix.lowercased()) {
+            let lower = text.lowercased()
+            let prefixLower = prefix.lowercased()
+            if lower.hasPrefix(prefixLower) {
                 text = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
@@ -92,18 +104,16 @@ public enum TranscriptCleaner {
                 expectedLemmas.contains(lemma)
                     || expectedLemmas.contains(where: { softMatch($0, lemma) })
             }.count
-            let ratio = Double(hits) / Double(lemmas.count)
-            // Keep the first sentence always if it has any overlap; later sentences need clear overlap.
+            // Keep the first sentence always; later sentences need clear overlap.
             if kept.isEmpty {
-                if hits > 0 || sentences.count == 1 {
-                    kept.append(sentence)
-                } else {
-                    kept.append(sentence) // still keep something rather than empty
-                }
-            } else if ratio >= 0.4 {
                 kept.append(sentence)
             } else {
-                break
+                let ratio = Double(hits) / Double(lemmas.count)
+                if ratio >= minSentenceOverlapRatio {
+                    kept.append(sentence)
+                } else {
+                    break
+                }
             }
         }
 
@@ -137,13 +147,13 @@ public enum TranscriptCleaner {
         return result.joined(separator: " ")
     }
 
-    static func looksLikeRepetitionHallucination(_ text: String) -> Bool {
+    private static func looksLikeRepetitionHallucination(_ text: String) -> Bool {
         let tokens = text
             .split(whereSeparator: \.isWhitespace)
             .map { normalizeToken(String($0)) }
             .filter { !$0.isEmpty }
 
-        guard tokens.count >= 6 else { return false }
+        guard tokens.count >= repetitionMinTokens else { return false }
 
         var counts: [String: Int] = [:]
         for token in tokens {
@@ -151,12 +161,12 @@ public enum TranscriptCleaner {
         }
 
         let maxCount = counts.values.max() ?? 0
-        if maxCount >= 5 { return true }
+        if maxCount >= repetitionMaxCount { return true }
 
         let ratio = Double(maxCount) / Double(tokens.count)
-        if tokens.count >= 10, ratio > 0.35 { return true }
+        if tokens.count >= repetitionRatioMinTokens, ratio > repetitionMaxRatio { return true }
 
-        if tokens.count >= 12, counts.count <= 5 { return true }
+        if tokens.count >= lowDiversityMinTokens, counts.count <= lowDiversityMaxUnique { return true }
 
         return false
     }
@@ -193,17 +203,26 @@ public enum TranscriptCleaner {
 
     private static func splitSentences(_ text: String) -> [String] {
         var parts: [String] = []
-        var current = ""
-        for ch in text {
-            current.append(ch)
+        var sentenceStart = text.startIndex
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            let ch = text[index]
+            let next = text.index(after: index)
             if ".!?".contains(ch) {
-                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { parts.append(trimmed) }
-                current = ""
+                let trimmed = text[sentenceStart..<next].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    parts.append(trimmed)
+                }
+                sentenceStart = next
             }
+            index = next
         }
-        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !tail.isEmpty { parts.append(tail) }
+
+        let tail = text[sentenceStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty {
+            parts.append(tail)
+        }
         return parts
     }
 

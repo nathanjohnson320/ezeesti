@@ -97,8 +97,8 @@ public final class TutorEngine: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.shutdownNativeModels()
+            Task { @MainActor in
+                await self?.shutdownNativeModels()
             }
         }
     }
@@ -110,13 +110,9 @@ public final class TutorEngine: ObservableObject {
     }
 
     /// Unload in-process Whisper / EstLLM before Metal / process teardown.
-    public func shutdownNativeModels() {
-        if let whisper = recognizer as? WhisperCppService {
-            whisper.shutdown()
-        }
-        if let llama = languageModel as? LlamaCppService {
-            llama.shutdown()
-        }
+    public func shutdownNativeModels() async {
+        await recognizer.shutdown()
+        await languageModel.shutdown()
     }
 
     public func loadLessons() {
@@ -133,17 +129,13 @@ public final class TutorEngine: ObservableObject {
 
     /// Preload Whisper (kept warm) and prime EstLLM (load then unload) before practice.
     public func warmupModels() async throws {
-        if let whisper = recognizer as? WhisperCppService {
-            warmupState = .loadingWhisper
-            warmupDetail = "Loading Whisper on GPU…"
-            try await whisper.warmup()
-        }
+        warmupState = .loadingWhisper
+        warmupDetail = "Loading Whisper on GPU…"
+        try await recognizer.warmup()
 
-        if let llama = languageModel as? LlamaCppService {
-            warmupState = .loadingTutor
-            warmupDetail = "Priming EstLLM…"
-            try await llama.warmup()
-        }
+        warmupState = .loadingTutor
+        warmupDetail = "Priming EstLLM…"
+        try await languageModel.warmup()
 
         warmupState = .loadingTutor
         warmupDetail = "Loading Neurokõne voice (once)…"
@@ -168,7 +160,7 @@ public final class TutorEngine: ObservableObject {
             return
         }
         do {
-            try recorder.startRecording()
+            try await recorder.startRecording()
             phase = .recording
         } catch {
             phase = .error(error.localizedDescription)
@@ -182,7 +174,7 @@ public final class TutorEngine: ObservableObject {
         }
 
         do {
-            let audioURL = try recorder.stopRecording()
+            let audioURL = try await recorder.stopRecording()
             phase = .transcribing
             let transcript = try await recognizer.transcribe(audioURL: audioURL)
             lastTranscript = transcript.text

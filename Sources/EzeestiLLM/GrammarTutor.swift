@@ -10,6 +10,10 @@ public protocol LanguageModeling: Sendable {
         maxTokens: Int,
         temperature: Double?
     ) async throws -> String
+    /// Optional preload / prime so the first completion is faster.
+    func warmup() async throws
+    /// Unload native/Metal resources while the process is still healthy (e.g. app terminate).
+    func shutdown() async
 }
 
 public extension LanguageModeling {
@@ -20,6 +24,10 @@ public extension LanguageModeling {
     func complete(system: String, user: String) async throws -> String {
         try await complete(system: system, user: user, maxTokens: 160, temperature: nil)
     }
+
+    func warmup() async throws {}
+
+    func shutdown() async {}
 }
 
 public struct GrammarTutorPrompt {

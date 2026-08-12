@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import EzeestiCore
+import EzeestiASR
+import EzeestiLLM
+import EzeestiTTS
 import EzeestiTutor
 import EzeestiLearning
 
@@ -53,9 +56,44 @@ public struct RootView: View {
             guard !engines.didStart else { return }
             engines.didStart = true
             do {
-                let tutor = try TutorEngine()
+                let paths = try ModelPaths.defaultApplicationSupport()
+                guard paths.whisperNativeReady,
+                      let whisperModel = paths.whisperGGML,
+                      let whisperLib = paths.whisperLibDir
+                else {
+                    throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
+                }
+                guard paths.llamaNativeReady,
+                      let llamaModel = paths.estLLMGGUF,
+                      let llamaLib = paths.llamaLibDir
+                else {
+                    throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
+                }
+                guard let neurokone = paths.neurokoneBinary,
+                      FileManager.default.isExecutableFile(atPath: neurokone.path)
+                else {
+                    throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
+                }
+
+                // One shared native stack for tutor + learning (avoid double Metal residency).
+                let whisper = WhisperCppService(modelPath: whisperModel, libDir: whisperLib)
+                let llama = LlamaCppService(modelPath: llamaModel, libDir: llamaLib)
+                let speaker = NeurokoneTTSService(binaryPath: neurokone)
+
+                let tutor = try TutorEngine(
+                    modelPaths: paths,
+                    recognizer: whisper,
+                    languageModel: llama,
+                    speaker: speaker
+                )
                 let store = VocabStore(modelContext: modelContext)
-                let learning = try LearningEngine(vocab: store)
+                let learning = try LearningEngine(
+                    vocab: store,
+                    recognizer: whisper,
+                    languageModel: llama,
+                    speaker: speaker,
+                    modelPaths: paths
+                )
                 engines.attach(tutor: tutor, learning: learning)
                 learning.bootstrap()
                 try await tutor.warmupModels()

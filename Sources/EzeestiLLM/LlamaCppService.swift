@@ -35,7 +35,9 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
     }
 
     deinit {
-        shutdown()
+        // Explicit `shutdown()` is preferred (app terminate). This is a last-resort sync unload
+        // if the instance is released without that call; avoid async hops from deinit.
+        shutdownSync()
     }
 
     public func complete(
@@ -99,7 +101,11 @@ public final class LlamaCppService: LanguageModeling, @unchecked Sendable {
     }
 
     /// Free model + close llama/ggml dylibs while Metal is still usable (app terminate).
-    public func shutdown() {
+    public func shutdown() async {
+        shutdownSync()
+    }
+
+    private func shutdownSync() {
         lock.lock()
         defer { lock.unlock() }
         unloadFn?()

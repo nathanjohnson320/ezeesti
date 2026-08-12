@@ -2,8 +2,13 @@ import AVFoundation
 import Foundation
 import EzeestiCore
 
-@MainActor
-public final class MicrophoneRecorder: AudioRecording {
+/// Captures 16 kHz mono PCM via `AVAudioRecorder` for Whisper transcription.
+public actor MicrophoneRecorder: AudioRecording {
+    /// Minimum usable clip length before stop rejects the recording.
+    private static let minimumDurationSeconds: TimeInterval = 0.6
+    /// Peak power below this (0 dB = full scale, -160 = silence) usually means no voice.
+    private static let minimumPeakPowerDecibels: Float = -45
+
     public private(set) var isRecording = false
 
     private var recorder: AVAudioRecorder?
@@ -20,8 +25,10 @@ public final class MicrophoneRecorder: AudioRecording {
         }
     }
 
-    public func startRecording() throws {
-        guard !isRecording else { return }
+    public func startRecording() async throws {
+        guard !isRecording else {
+            throw EzeestiError.recordingFailed("Already recording")
+        }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("ezeesti-\(UUID().uuidString).wav")
@@ -37,7 +44,10 @@ public final class MicrophoneRecorder: AudioRecording {
 
         let audioRecorder = try AVAudioRecorder(url: url, settings: settings)
         audioRecorder.isMeteringEnabled = true
-        guard audioRecorder.prepareToRecord(), audioRecorder.record() else {
+        guard audioRecorder.prepareToRecord() else {
+            throw EzeestiError.recordingFailed("Could not prepare AVAudioRecorder")
+        }
+        guard audioRecorder.record() else {
             throw EzeestiError.recordingFailed("Could not start AVAudioRecorder")
         }
 
@@ -47,7 +57,7 @@ public final class MicrophoneRecorder: AudioRecording {
         isRecording = true
     }
 
-    public func stopRecording() throws -> URL {
+    public func stopRecording() async throws -> URL {
         guard isRecording, let recorder, let outputURL else {
             throw EzeestiError.recordingFailed("Not currently recording")
         }
@@ -61,13 +71,12 @@ public final class MicrophoneRecorder: AudioRecording {
         isRecording = false
         startedAt = nil
 
-        if duration < 0.6 {
+        if duration < Self.minimumDurationSeconds {
             throw EzeestiError.recordingFailed(
                 "Recording was too short (\(String(format: "%.1f", duration))s) — hold Record while you speak, then Stop."
             )
         }
-        // AVAudioRecorder metering: 0 dB = full scale, -160 = silence. Below -45 is usually no voice.
-        if peak < -45 {
+        if peak < Self.minimumPeakPowerDecibels {
             throw EzeestiError.recordingFailed(
                 "Mic captured almost no sound — check the input device and speak closer to the microphone."
             )

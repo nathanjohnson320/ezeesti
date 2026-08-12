@@ -450,7 +450,7 @@ public final class LearningEngine: ObservableObject {
         guard let text = selectedText else { return }
         do {
             lastASRError = nil
-            let audioURL = try recorder.stopRecording()
+            let audioURL = try await recorder.stopRecording()
             phase = .transcribing
             let transcript = try await recognizer.transcribe(
                 audioURL: audioURL,
@@ -530,7 +530,7 @@ public final class LearningEngine: ObservableObject {
             return
         }
         do {
-            try recorder.startRecording()
+            try await recorder.startRecording()
             phase = next
         } catch {
             if next == .recordingSummary {
@@ -540,6 +540,12 @@ public final class LearningEngine: ObservableObject {
                 phase = .error(error.localizedDescription)
             }
         }
+    }
+
+    /// Unload shared native recognizer/LLM if this engine owns distinct instances.
+    public func shutdownNativeModels() async {
+        await recognizer.shutdown()
+        await languageModel.shutdown()
     }
 
     public func finishToReading() {
