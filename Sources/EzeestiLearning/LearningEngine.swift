@@ -106,6 +106,24 @@ public final class LearningEngine {
         }
     }
 
+    /// Translates free-form Estonian text to English via EstLLM, with a phrase-by-phrase breakdown.
+    public func translateEstonian(_ text: String) async throws -> TextTranslationResult {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw EzeestiError.invalidLessonData("Nothing to translate")
+        }
+        let prompt = TextTranslationPrompt(estonian: trimmed)
+        let raw = try await languageModel.complete(
+            system: prompt.system,
+            user: prompt.user,
+            maxTokens: 512
+        )
+        guard let translation = TextTranslationParser.parse(raw) else {
+            throw EzeestiError.llmFailed("Could not parse translation")
+        }
+        return translation
+    }
+
     /// Seeds lexicon/vocab cleanup, refreshes progress, and warms TTS (failures are recorded, not swallowed).
     public func bootstrap() async {
         do {

@@ -37,7 +37,16 @@ public struct RootView: View {
                 .padding(40)
             case .session:
                 if let learning = engines.learning {
-                    LearningSessionView(learning: learning)
+                    TabView {
+                        LearningSessionView(learning: learning)
+                            .tabItem {
+                                Label("Learn", systemImage: "text.bubble")
+                            }
+                        TranslateView(learning: learning)
+                            .tabItem {
+                                Label("Translate", systemImage: "globe")
+                            }
+                    }
                 } else {
                     ProgressView("Checking setup…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -136,6 +145,158 @@ final class EngineHolder {
             #endif
             setupFailure = failure
         }
+    }
+}
+
+/// Free-form Estonian → English translation via EstLLM.
+private struct TranslateView: View {
+    var learning: LearningEngine
+    @State private var input = ""
+    @State private var result: TextTranslationResult?
+    @State private var errorMessage: String?
+    @State private var isTranslating = false
+    @FocusState private var inputFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Paste or type Estonian text. EstLLM translates it and explains each phrase.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    TextEditor(text: $input)
+                        .font(.title3)
+                        .focused($inputFocused)
+                        .frame(minHeight: 120, maxHeight: 220)
+                        .padding(8)
+                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                        )
+
+                    controls
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    if let result {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("English")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(result.translation)
+                                .font(.title3)
+                                .textSelection(.enabled)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+
+                        if !result.breakdown.isEmpty {
+                            BreakdownView(chunks: result.breakdown)
+                        }
+                    }
+                }
+                .padding(32)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .navigationTitle("Translate")
+            .onAppear { inputFocused = true }
+        }
+    }
+
+    private var hasContent: Bool {
+        !input.isEmpty || result != nil || errorMessage != nil
+    }
+
+    private var controls: some View {
+        HStack(spacing: 12) {
+            Button {
+                Task { await translate() }
+            } label: {
+                if isTranslating {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.horizontal, 8)
+                } else {
+                    Text("Translate")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isTranslating || input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Button("Clear") {
+                input = ""
+                result = nil
+                errorMessage = nil
+                inputFocused = true
+            }
+            .disabled(isTranslating || !hasContent)
+        }
+    }
+
+    @MainActor
+    private func translate() async {
+        let source = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return }
+        isTranslating = true
+        errorMessage = nil
+        result = nil
+        defer { isTranslating = false }
+        do {
+            result = try await learning.translateEstonian(source)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// Phrase-by-phrase gloss of a translated sentence.
+private struct BreakdownView: View {
+    let chunks: [TranslationChunk]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Word by word")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(chunk.estonian)
+                            .font(.headline)
+                        Text("—")
+                            .foregroundStyle(.tertiary)
+                        Text(chunk.english)
+                            .font(.body)
+                    }
+                    if !chunk.literal.isEmpty {
+                        Text("literally: \(chunk.literal)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !chunk.note.isEmpty {
+                        Text(chunk.note)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
