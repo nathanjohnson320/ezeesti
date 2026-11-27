@@ -182,4 +182,133 @@ public struct LearnerProgress: Sendable, Equatable {
 
         return picked
     }
+
+    /// Cap for Words-mode teaching (A1–B2 only).
+    public static let wordsMaxCEFR: CEFRLevel = .b2
+
+    /// Working band for Words, never above B2.
+    public static func wordsWorkingLevel(from progress: LearnerProgress) -> CEFRLevel {
+        minCEFR(progress.workingLevel, wordsMaxCEFR)
+    }
+
+    /// Next lemma for Words mode: due → learning → unknown high-frequency content word at the working band (≤ B2).
+    public static func targetLemmaForWords(
+        workingLevel: CEFRLevel,
+        knownLemmas: Set<String>,
+        learningLemmas: Set<String> = [],
+        dueLemmas: [String] = [],
+        alreadyFocused: Set<String> = [],
+        lexicon: LexiconCatalog = .shared
+    ) -> LexiconEntry? {
+        let capped = minCEFR(workingLevel, wordsMaxCEFR)
+        let picks = targetLemmasForPassage(
+            workingLevel: capped,
+            knownLemmas: knownLemmas,
+            learningLemmas: learningLemmas,
+            dueLemmas: dueLemmas,
+            alreadyFocused: alreadyFocused,
+            limit: 1,
+            lexicon: lexicon
+        )
+        return picks.first
+    }
+
+    /// Tutor focus words: only known / learning lemmas — never brand-new unknowns.
+    ///
+    /// Default order works across Words + Tutor: prefer vocab not yet spoken in Tutor,
+    /// then due/learning, then known — so Words-only lemmas are not skipped for the latest fail.
+    /// Pass `preferDueFirst: true` when the learner explicitly opens review.
+    public static func targetLemmasForTutor(
+        workingLevel: CEFRLevel,
+        knownLemmas: Set<String>,
+        learningLemmas: Set<String> = [],
+        dueLemmas: [String] = [],
+        alreadyFocused: Set<String> = [],
+        tutorPracticedLemmas: Set<String> = [],
+        preferDueFirst: Bool = false,
+        limit: Int = 1,
+        lexicon: LexiconCatalog = .shared
+    ) -> [LexiconEntry] {
+        lexicon.loadBundledIfNeeded()
+        let cap = max(1, limit)
+        var picked: [LexiconEntry] = []
+        var pickedKeys = Set<String>()
+        let functionWords = GradedTextCatalog.baselineFunctionWords
+        let dueKeys = Set(dueLemmas.map { EstonianTokenizer.normalize($0) })
+
+        func appendEntry(for raw: String) {
+            guard picked.count < cap else { return }
+            let key = EstonianTokenizer.normalize(raw)
+            guard !pickedKeys.contains(key) else { return }
+            if let entry = lexicon.entry(forSurface: raw) ?? lexicon.entry(forSurface: key) {
+                picked.append(entry)
+            } else {
+                picked.append(LexiconEntry(lemma: key, cefr: workingLevel, pos: nil, freqRank: nil))
+            }
+            pickedKeys.insert(key)
+        }
+
+        if preferDueFirst {
+            for raw in dueLemmas {
+                appendEntry(for: raw)
+            }
+            guard picked.count < cap else { return picked }
+        }
+
+        struct Ranked {
+            let entry: LexiconEntry
+            let key: String
+            let awaitingTutor: Bool
+            let isDue: Bool
+            let isLearning: Bool
+            let isContent: Bool
+            let alreadyUsed: Bool
+            let freq: Int
+        }
+
+        let candidateKeys = learningLemmas.union(knownLemmas)
+        let ranked: [Ranked] = candidateKeys.compactMap { key in
+            if pickedKeys.contains(key) { return nil }
+            if functionWords.contains(key), !learningLemmas.contains(key) { return nil }
+            let entry = lexicon.entry(forSurface: key)
+                ?? LexiconEntry(lemma: key, cefr: workingLevel, pos: nil, freqRank: nil)
+            if !entry.isPassageFocusCandidate, !learningLemmas.contains(key) { return nil }
+            return Ranked(
+                entry: entry,
+                key: key,
+                awaitingTutor: !tutorPracticedLemmas.contains(key),
+                isDue: dueKeys.contains(key),
+                isLearning: learningLemmas.contains(key),
+                isContent: entry.isPassageFocusCandidate,
+                alreadyUsed: alreadyFocused.contains(key),
+                freq: entry.freqRank ?? 50_000
+            )
+        }
+        .sorted { lhs, rhs in
+            // Words-learned but not yet spoken in Tutor come first.
+            if lhs.awaitingTutor != rhs.awaitingTutor { return lhs.awaitingTutor && !rhs.awaitingTutor }
+            if lhs.isDue != rhs.isDue { return lhs.isDue && !rhs.isDue }
+            if lhs.isLearning != rhs.isLearning { return lhs.isLearning && !rhs.isLearning }
+            if lhs.isContent != rhs.isContent { return lhs.isContent && !rhs.isContent }
+            if lhs.alreadyUsed != rhs.alreadyUsed { return !lhs.alreadyUsed && rhs.alreadyUsed }
+            if lhs.freq != rhs.freq { return lhs.freq < rhs.freq }
+            return lhs.entry.lemma < rhs.entry.lemma
+        }
+
+        for item in ranked {
+            guard picked.count < cap else { break }
+            guard !pickedKeys.contains(item.key) else { continue }
+            picked.append(item.entry)
+            pickedKeys.insert(item.key)
+        }
+
+        return picked
+    }
+
+    private static func minCEFR(_ a: CEFRLevel, _ b: CEFRLevel) -> CEFRLevel {
+        let levels = CEFRLevel.allCases
+        let ai = levels.firstIndex(of: a) ?? 0
+        let bi = levels.firstIndex(of: b) ?? 0
+        return levels[min(ai, bi)]
+    }
 }

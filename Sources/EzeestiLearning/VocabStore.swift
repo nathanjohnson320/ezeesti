@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftData
 import EzeestiCore
+import EzeestiLLM
 
 /// Static dictionary row (not learner progress). Seeded once from bundled top-10k JSON into SwiftData/SQLite.
 /// Stored properties stay writable for SwiftData persistence; mutate learner state through `VocabStore`.
@@ -44,6 +45,28 @@ public final class CachedGloss {
         self.glossEnglish = glossEnglish
         self.source = source
         self.updatedAt = Date()
+    }
+}
+
+/// Cached EstLLM case / conjugation table for a lemma (JSON-encoded `WordParadigm`).
+@Model
+public final class CachedParadigm {
+    @Attribute(.unique) public var lemma: String
+    public var paradigmJSON: Data
+    public var kind: String
+    public var source: String
+    public var updatedAt: Date
+
+    public init(lemma: String, paradigm: WordParadigm, source: String = "estllm") {
+        self.lemma = lemma
+        self.paradigmJSON = (try? JSONEncoder().encode(paradigm)) ?? Data()
+        self.kind = paradigm.kind
+        self.source = source
+        self.updatedAt = Date()
+    }
+
+    public var paradigm: WordParadigm? {
+        try? JSONDecoder().decode(WordParadigm.self, from: paradigmJSON)
     }
 }
 
@@ -120,7 +143,7 @@ public final class VocabStore {
     }
 
     public static func makeContainer() throws -> ModelContainer {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(
             "EzeestiStore",
             schema: schema,
@@ -188,6 +211,27 @@ public final class VocabStore {
         return Set(cards.map(\.lemma))
     }
 
+    /// Learner cards at a familiarity, sorted for sidebar lists (due/learning first by due date).
+    public func cards(
+        withFamiliarity familiarity: VocabFamiliarity,
+        limit: Int = 80
+    ) throws -> [VocabCard] {
+        let raw = familiarity.rawValue
+        var descriptor = FetchDescriptor<VocabCard>(
+            predicate: #Predicate { $0.familiarityRaw == raw }
+        )
+        switch familiarity {
+        case .learning:
+            descriptor.sortBy = [SortDescriptor(\.due), SortDescriptor(\.lemma)]
+        case .known:
+            descriptor.sortBy = [SortDescriptor(\.lemma)]
+        case .unknown:
+            descriptor.sortBy = [SortDescriptor(\.lemma)]
+        }
+        descriptor.fetchLimit = max(1, limit)
+        return try modelContext.fetch(descriptor)
+    }
+
     public func card(forSurface surface: String) throws -> VocabCard? {
         let lemma = EstonianTokenizer.normalize(surface)
         guard !lemma.isEmpty else { return nil }
@@ -240,6 +284,51 @@ public final class VocabStore {
         if let card = try card(forSurface: surface), card.glossEnglish.isEmpty {
             card.glossEnglish = gloss
             card.updatedAt = Date()
+        }
+        try modelContext.save()
+    }
+
+    public func cachedParadigm(forSurface surface: String) throws -> WordParadigm? {
+        let lemma = EstonianTokenizer.normalize(surface)
+        guard !lemma.isEmpty else { return nil }
+        var descriptor = FetchDescriptor<CachedParadigm>(
+            predicate: #Predicate { $0.lemma == lemma }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try modelContext.fetch(descriptor).first,
+              let paradigm = row.paradigm,
+              let cleaned = WordFormsParser.sanitizeParadigm(paradigm),
+              !cleaned.rows.isEmpty else { return nil }
+        return cleaned
+    }
+
+    public func saveParadigm(
+        forSurface surface: String,
+        paradigm: WordParadigm,
+        source: String = "estllm"
+    ) throws {
+        let lemma = EstonianTokenizer.normalize(surface)
+        guard !lemma.isEmpty else {
+            throw EzeestiError.invalidLessonData("Cannot save paradigm for empty surface")
+        }
+        guard !paradigm.rows.isEmpty else {
+            throw EzeestiError.invalidLessonData("Cannot save empty paradigm for \(lemma)")
+        }
+        guard let data = try? JSONEncoder().encode(paradigm) else {
+            throw EzeestiError.invalidLessonData("Could not encode paradigm for \(lemma)")
+        }
+
+        var descriptor = FetchDescriptor<CachedParadigm>(
+            predicate: #Predicate { $0.lemma == lemma }
+        )
+        descriptor.fetchLimit = 1
+        if let existing = try modelContext.fetch(descriptor).first {
+            existing.paradigmJSON = data
+            existing.kind = paradigm.kind
+            existing.source = source
+            existing.updatedAt = Date()
+        } else {
+            modelContext.insert(CachedParadigm(lemma: lemma, paradigm: paradigm, source: source))
         }
         try modelContext.save()
     }

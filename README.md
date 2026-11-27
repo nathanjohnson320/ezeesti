@@ -1,8 +1,12 @@
 # ezeesti
 
-Offline Estonian learning app for Apple Silicon Macs (M1–M4).
+Offline Estonian learning app for Apple Silicon Macs (M series 1-6).
 
-Speak → Whisper transcribes → EstLLM explains the grammar "why" → hear the correction → retry.
+I made this tool because I don't think learning a language should cost money. If you like it and use it let me know, if there are things that could be improved also let me know. It's AI models, so not guaranteed to be 100% accurate, but for most things it works.
+
+--- ai summary ---
+
+Three modes: **Words** (lemma + form drills), **Tutor** (speak sentences from known vocab), **Translate** (Est→En with grammar notes). Whisper + EstLLM run locally via OMLX.
 
 Inference runs through a required local [OMLX](https://github.com/jundot/omlx) server (OpenAI-compatible chat + transcription APIs). Neurokõne TTS stays optional as a Python CLI.
 

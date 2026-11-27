@@ -2,30 +2,44 @@
 
 ## Product decision
 
-**Speech-first learning.** Production is always spoken (no writing).
+**Three modes.** Words teaches lemmas and forms; Tutor practices speaking sentences from known vocabulary; Translate explains Estonian with grammar notes.
 
-## Learning loop (implemented)
+## Modes
 
-1. Progress tracks known/learning lemmas; only word state is persisted (SwiftData `VocabCard`). Start = **0 known** at A1.
-2. Each load drafts one ephemeral sentence around **one** content lemma (prefer a due word, then learning, then an unknown noun/verb/adjective at the working CEFR band). Prefer ~8–16 words so the sentence is speakable and useful. A second LLM pass **validates or rewrites** the draft before it is shown.
-3. Due words (including known words whose backoff interval has elapsed) surface via sidebar review, which generates a sentence with those focus words and uses the same read-aloud path.
-4. Tap a word → English gloss (bundled, cached, or EstLLM on demand) + CEFR/POS; flag only what you need help with.
-5. From reading, **Read aloud** starts the mic; stop to grade the transcript against the target sentence (Whisper + EstLLM). Feedback includes pronunciation/phrasing tips.
-6. Correct + unflagged focus lemmas → **known** with exponential backoff (1 → 2 → 4 → … days, capped at 180). Flagged or incorrect focus lemmas stay **learning** and are due soon.
-7. After a perfect Done, the next sentence is generated from leftover / due words.
+### Words
 
-The app home is **Learn only**. There is no hardcoded text catalog and no disk cache of passages — sentences live only in the current session.
+1. Progress walks A1→B2 by frequency within the working CEFR band (~70% band coverage before advancing). Teaching stops at B2.
+2. Show the next lemma (gloss / POS / CEFR), then ask EstLLM for the top common forms plus a few extras and cloze sentences.
+3. Run a short Speakly-style drill queue: chips, typing, and speaking mixed at random.
+4. Enough correct forms → **known** with exponential backoff; otherwise stay **learning** and due soon.
 
-`EzeestiTutor` / lesson packs remain in the tree for warmup and possible later pattern drills generated from the 10k lexicon + EstLLM.
+### Tutor
+
+1. Builds one ephemeral sentence around a **known / learning / due** lemma only — never introduces brand-new unknowns. Empty until Words has taught something.
+2. Tap a word → English gloss; flag hard words; **Read aloud** → Whisper + EstLLM grade.
+3. Correct + unflagged focus → known with backoff; flagged/incorrect → learning due soon.
+
+### Translate
+
+Free-form Estonian → English via EstLLM with a phrase-by-phrase breakdown (literal sense + short grammar notes). No progress writes.
+
+## Learning loop details
+
+- Only word state is persisted (SwiftData `VocabCard`). Start = **0 known** at A1.
+- Sentences are ephemeral — no hardcoded passage catalog and no disk cache of Tutor drafts.
+- Forms for Words come from EstLLM on the fly (no bundled morphology tables yet; Vabamorf later).
+- Passage generation is a **single** EstLLM sample gated by local usability checks — no second-pass validation rewrite.
+
+`EzeestiTutor` / lesson packs remain in the tree for warmup and possible later pattern drills.
 
 ## Modules
 
 | Module | Role |
 |---|---|
 | `EzeestiCore` | Tokenizer, graded text types, lexicon, exponential backoff helpers, lesson packs |
-| `EzeestiLearning` | SwiftData vocab store, `LearningEngine` |
+| `EzeestiLearning` | SwiftData vocab store, `LearningEngine` (Tutor), `WordsEngine` |
 | `EzeestiTutor` | Warmup + unused drill engine (kept for reuse) |
-| ASR / LLM / TTS | Used by Learn |
+| ASR / LLM / TTS | Used by Words + Tutor |
 
 ## Models
 
@@ -33,6 +47,6 @@ Application Support `Ezeesti/Models/` holds converted MLX directories for EstLLM
 
 ## Later
 
-- Vabamorf lemmas
+- Vabamorf lemmas / morphology tables
 - Phoneme pronunciation coaching
 - Streaming chat completions in the UI

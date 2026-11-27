@@ -5,7 +5,7 @@ import EzeestiASR
 import EzeestiLLM
 import EzeestiTTS
 
-/// Coordinates graded reading, passage generation, ASR grading, and vocab updates.
+/// Coordinates Tutor-mode graded reading, passage generation, ASR grading, and vocab updates.
 @Observable
 @MainActor
 public final class LearningEngine {
@@ -22,9 +22,11 @@ public final class LearningEngine {
         case error(String)
     }
 
-    /// Passage prompts stay at A1–A2 until higher-band templates are tuned.
-    private static let maxPassageCEFR: CEFRLevel = .a2
-    private static let passageRetryTemperatures: [Double] = [0.2, 0.55, 0.85]
+    /// Tutor sentences stay within A1–B2, matching Words-mode teaching.
+    private static let maxPassageCEFR: CEFRLevel = .b2
+    /// Minimum known+learning lemmas before Tutor can draft a sentence.
+    public static let minimumTutorVocabCount = 1
+    private static let tutorPracticedDefaultsKey = "ezeesti.tutor.practicedLemmas"
 
     public private(set) var phase: Phase = .idle
     public private(set) var selectedText: GradedText?
@@ -40,6 +42,8 @@ public final class LearningEngine {
     public private(set) var duePreview: [VocabCard] = []
     public private(set) var dueCount: Int = 0
     public private(set) var progress: LearnerProgress = .empty
+    /// Known/learning lemmas not yet spoken successfully in Tutor (from Words or earlier).
+    public private(set) var tutorQueue: [VocabCard] = []
     public private(set) var lastTranscript: String = ""
     public private(set) var lastSummaryFeedback: SpokenSummaryFeedback?
     public private(set) var speakPrompt: String = ""
@@ -61,6 +65,8 @@ public final class LearningEngine {
     private var pendingAdvanceAfterPerfect = false
     /// When set, next generation prefers these due lemmas as focus words.
     private var preferredDueFocus: [String] = []
+    private var tutorPracticedLemmas: Set<String> = []
+    private let defaults: UserDefaults
 
     public init(
         vocab: VocabStore,
@@ -68,10 +74,13 @@ public final class LearningEngine {
         recognizer: (any SpeechRecognizing)? = nil,
         languageModel: (any LanguageModeling)? = nil,
         speaker: (any TextSpeaking)? = nil,
-        modelPaths: ModelPaths? = nil
+        modelPaths: ModelPaths? = nil,
+        defaults: UserDefaults = .standard
     ) throws {
         self.vocab = vocab
         self.recorder = recorder ?? MicrophoneRecorder()
+        self.defaults = defaults
+        self.tutorPracticedLemmas = Self.loadTutorPracticed(from: defaults)
 
         let paths: ModelPaths
         if let modelPaths {
@@ -123,6 +132,11 @@ public final class LearningEngine {
         return translation
     }
 
+    /// True when Tutor has at least one known or learning lemma to practice.
+    public var canStartTutor: Bool {
+        progress.knownCount + progress.learningCount >= Self.minimumTutorVocabCount
+    }
+
     /// Seeds lexicon/vocab cleanup, refreshes progress, and warms TTS (failures are recorded, not swallowed).
     public func bootstrap() async {
         do {
@@ -131,8 +145,10 @@ public final class LearningEngine {
             _ = try await vocab.seedLexiconFromBundleIfNeeded()
             try await vocab.clearAssumedSeedVocabularyIfNeeded()
             try refreshProgress()
-            if selectedText == nil {
+            if selectedText == nil, canStartTutor {
                 continueRecommendedReading()
+            } else if selectedText == nil {
+                phase = .idle
             }
             do {
                 try await speaker.prepare()
@@ -149,15 +165,32 @@ public final class LearningEngine {
         progress = try vocab.progressSnapshot()
         dueCount = progress.dueCount
         duePreview = try vocab.dueCards(limit: 8)
+        tutorQueue = try buildTutorQueue()
     }
 
-    /// Draft a fresh sentence from the next unknown / due lemmas.
+    /// Refresh familiarity for the current sentence against the latest known/learning set.
+    public func refreshFamiliarity() {
+        guard let text = selectedText else { return }
+        do {
+            try recomputeFamiliarity(for: text)
+        } catch {
+            phase = .error(error.localizedDescription)
+        }
+    }
+
+    /// Draft a fresh sentence from known / learning / due lemmas (Tutor mode).
     public func continueRecommendedReading() {
         preferredDueFocus = []
         do {
             try refreshProgress()
         } catch {
             phase = .error(error.localizedDescription)
+            return
+        }
+        guard canStartTutor else {
+            selectedText = nil
+            familiarity = nil
+            phase = .idle
             return
         }
         generationTask?.cancel()
@@ -186,7 +219,7 @@ public final class LearningEngine {
         guard !isGeneratingPassage else { return }
         isGeneratingPassage = true
         phase = .generatingPassage
-        generationDetail = "Picking leftover \(progress.workingLevel.rawValue) words…"
+        generationDetail = "Picking a word you already know…"
         defer {
             isGeneratingPassage = false
             generationDetail = ""
@@ -195,20 +228,30 @@ public final class LearningEngine {
         do {
             let known = try vocab.knownLemmas()
             let learning = try vocab.learningLemmas()
+            guard !known.isEmpty || !learning.isEmpty else {
+                selectedText = nil
+                familiarity = nil
+                phase = .idle
+                return
+            }
+
+            let preferDueFirst = !preferredDueFocus.isEmpty
             let dueLemmas: [String]
-            if preferredDueFocus.isEmpty {
-                dueLemmas = try vocab.dueCards(limit: 1).map(\.lemma)
-            } else {
+            if preferDueFirst {
                 dueLemmas = preferredDueFocus
+            } else {
+                dueLemmas = try vocab.dueCards(limit: 8).map(\.lemma)
             }
             preferredDueFocus = []
 
-            let targets = LearnerProgress.targetLemmasForPassage(
+            let targets = LearnerProgress.targetLemmasForTutor(
                 workingLevel: progress.workingLevel,
                 knownLemmas: known,
                 learningLemmas: learning,
                 dueLemmas: dueLemmas,
                 alreadyFocused: sessionFocusedLemmas,
+                tutorPracticedLemmas: tutorPracticedLemmas,
+                preferDueFirst: preferDueFirst,
                 limit: 1
             )
 
@@ -229,23 +272,19 @@ public final class LearningEngine {
                 }
             }
 
+            // Prefer known content lemmas as glue so Tutor stays inside learned vocab.
+            let knownHint = Array(known.prefix(24)).sorted().joined(separator: ", ")
             let cefr = passageGenerationLevel
             let prompt = PassageGenerationPrompt(
                 cefr: cefr,
                 focusLemmas: focus,
-                focusGlosses: glosses
+                focusGlosses: glosses,
+                knownGlueHint: knownHint.isEmpty
+                    ? "ma, sa, on, ja, ei, see, täna, tahan, lähen"
+                    : knownHint
             )
 
-            let draft = try await generatePassage(prompt: prompt, focus: focus, cefr: cefr)
-            if Task.isCancelled { return }
-
-            generationDetail = "Checking the sentence…"
-            let text = try await validateSentence(
-                draft,
-                focus: focus,
-                glosses: glosses,
-                cefr: cefr
-            )
+            let text = try await generatePassage(prompt: prompt, focus: focus, cefr: cefr)
             if Task.isCancelled { return }
 
             for lemma in focus {
@@ -258,75 +297,26 @@ public final class LearningEngine {
         }
     }
 
-    /// A single low-temperature sample often trips one of the passage gates, so
-    /// resample at rising temperature before giving up on the model.
+    /// Single EstLLM sample gated by local usability checks (no second-pass review).
     private func generatePassage(
         prompt: PassageGenerationPrompt,
         focus: [String],
         cefr: CEFRLevel
     ) async throws -> GradedText {
-        var lastError: Error?
-
-        for (attempt, temperature) in Self.passageRetryTemperatures.enumerated() {
-            if Task.isCancelled { throw CancellationError() }
-            if attempt > 0 {
-                generationDetail = "Rewriting the sentence (attempt \(attempt + 1))…"
-            }
-
-            do {
-                let raw = try await languageModel.complete(
-                    system: prompt.system,
-                    user: prompt.user,
-                    maxTokens: 220,
-                    temperature: temperature
-                )
-                if let draft = PassageGenerationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
-                    return draft
-                }
-            } catch {
-                lastError = error
-            }
-        }
-
-        if let lastError {
-            throw lastError
-        }
-        throw EzeestiError.llmFailed(
-            "EstLLM could not write a usable sentence for “\(focus.joined(separator: ", "))” after \(Self.passageRetryTemperatures.count) attempts"
-        )
-    }
-
-    /// Feed the draft back through the model; accept a rewrite if the draft is weak.
-    private func validateSentence(
-        _ draft: GradedText,
-        focus: [String],
-        glosses: [String: String],
-        cefr: CEFRLevel
-    ) async throws -> GradedText {
-        let passageDraft = PassageDraft(
-            title: draft.title,
-            body: draft.body,
-            glossEnglish: draft.glossEnglish,
-            focusWords: draft.focusWords.isEmpty ? focus : draft.focusWords
-        )
-        let prompt = SentenceValidationPrompt(
-            cefr: cefr,
-            focusLemmas: focus,
-            focusGlosses: glosses,
-            draft: passageDraft
-        )
+        if Task.isCancelled { throw CancellationError() }
 
         let raw = try await languageModel.complete(
             system: prompt.system,
             user: prompt.user,
-            maxTokens: 220
+            maxTokens: 220,
+            temperature: 0.35
         )
-        if let validated = SentenceValidationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
-            return validated
+        if let draft = PassageGenerationParser.parse(raw, requiredFocus: focus, cefr: cefr) {
+            return draft
         }
-        // Draft already cleared generation gates; unusable reviewer JSON keeps the draft.
-        generationDetail = "Sentence review unusable — keeping draft."
-        return draft
+        throw EzeestiError.llmFailed(
+            "EstLLM could not write a usable sentence for “\(focus.joined(separator: ", "))”"
+        )
     }
 
     /// Wipe known/learning progress and draft a fresh first sentence.
@@ -337,6 +327,8 @@ public final class LearningEngine {
             sessionFocusedLemmas = []
             preferredDueFocus = []
             pendingAdvanceAfterPerfect = false
+            tutorPracticedLemmas = []
+            persistTutorPracticed()
             selectedText = nil
             familiarity = nil
             flaggedTokenIndexes = []
@@ -354,6 +346,13 @@ public final class LearningEngine {
         } catch {
             phase = .error(error.localizedDescription)
         }
+    }
+
+    /// Sidebar: practice a specific lemma from the shared Words+Tutor queue.
+    public func startTutorFocus(lemma: String) {
+        preferredDueFocus = [EstonianTokenizer.normalize(lemma)]
+        generationTask?.cancel()
+        generationTask = Task { await generateAndSelectNextPassage() }
     }
 
     public func selectText(_ text: GradedText?) {
@@ -657,6 +656,7 @@ public final class LearningEngine {
             if !flagged.isEmpty {
                 try vocab.markLearningDueSoon(flagged)
             }
+            markTutorPracticed(focus)
             pendingAdvanceAfterPerfect = true
         } else {
             var weak = Set(feedback.missingRequiredWords.map { EstonianTokenizer.normalize($0) })
@@ -728,6 +728,37 @@ public final class LearningEngine {
 
     private func recomputeFamiliarity(for text: GradedText) throws {
         let known = try vocab.knownLemmas()
-        familiarity = GradedTextCatalog.familiarity(text: text, knownLemmas: known)
+        let learning = try vocab.learningLemmas()
+        familiarity = GradedTextCatalog.familiarity(
+            text: text,
+            knownLemmas: known,
+            learningLemmas: learning
+        )
+    }
+
+    private func buildTutorQueue() throws -> [VocabCard] {
+        let practiced = tutorPracticedLemmas
+        let learning = try vocab.cards(withFamiliarity: .learning, limit: 40)
+        let known = try vocab.cards(withFamiliarity: .known, limit: 40)
+        return (learning + known).filter { card in
+            !practiced.contains(EstonianTokenizer.normalize(card.lemma))
+        }
+    }
+
+    private func markTutorPracticed(_ lemmas: [String]) {
+        for lemma in lemmas {
+            tutorPracticedLemmas.insert(EstonianTokenizer.normalize(lemma))
+        }
+        persistTutorPracticed()
+        tutorQueue = (try? buildTutorQueue()) ?? tutorQueue
+    }
+
+    private func persistTutorPracticed() {
+        defaults.set(Array(tutorPracticedLemmas).sorted(), forKey: Self.tutorPracticedDefaultsKey)
+    }
+
+    private static func loadTutorPracticed(from defaults: UserDefaults) -> Set<String> {
+        let raw = defaults.stringArray(forKey: tutorPracticedDefaultsKey) ?? []
+        return Set(raw.map { EstonianTokenizer.normalize($0) }.filter { !$0.isEmpty })
     }
 }

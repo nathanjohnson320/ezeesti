@@ -95,16 +95,22 @@ public enum GradedTextCatalog {
 
     public static func familiarity(
         text: GradedText,
-        knownLemmas: Set<String>
+        knownLemmas: Set<String>,
+        learningLemmas: Set<String> = [],
+        lexicon: LexiconCatalog = .shared
     ) -> TextFamiliarityReport {
+        lexicon.loadBundledIfNeeded()
+        let recognized = knownLemmas.union(learningLemmas)
         let tokens = EstonianTokenizer.tokenize(text.body)
         var known = 0
         var words = 0
         var predicted = Set<Int>()
         for token in tokens where token.isWord {
             words += 1
-            if knownLemmas.contains(token.normalized) {
+            if matchesFamiliar(token: token, lemmas: knownLemmas, lexicon: lexicon) {
                 known += 1
+            } else if matchesFamiliar(token: token, lemmas: recognized, lexicon: lexicon) {
+                // Learning words are not "new" — leave unhighlighted, don't count as known %.
             } else {
                 predicted.insert(token.index)
             }
@@ -115,5 +121,33 @@ public enum GradedTextCatalog {
             wordCount: words,
             predictedUnknown: predicted
         )
+    }
+
+    /// True when the token surface matches a lemma exactly, via lexicon lookup, or short inflection.
+    private static func matchesFamiliar(
+        token: TextToken,
+        lemmas: Set<String>,
+        lexicon: LexiconCatalog
+    ) -> Bool {
+        guard !lemmas.isEmpty else { return false }
+        if lemmas.contains(token.normalized) { return true }
+        if let entry = lexicon.entry(forSurface: token.surface)
+            ?? lexicon.entry(forSurface: token.normalized) {
+            let key = EstonianTokenizer.normalize(entry.lemma)
+            if lemmas.contains(key) { return true }
+        }
+        for lemma in lemmas {
+            if nearlyMatches(token.normalized, lemma) { return true }
+        }
+        return false
+    }
+
+    private static func nearlyMatches(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        guard min(a.count, b.count) >= 3 else { return false }
+        if a.hasPrefix(b) || b.hasPrefix(a) {
+            return abs(a.count - b.count) <= 2
+        }
+        return false
     }
 }

@@ -1,12 +1,13 @@
 import XCTest
 @testable import EzeestiLearning
 @testable import EzeestiCore
+@testable import EzeestiLLM
 import SwiftData
 
 final class VocabStoreTests: XCTestCase {
     @MainActor
     func testFlagAndDue() throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
@@ -20,7 +21,7 @@ final class VocabStoreTests: XCTestCase {
 
     @MainActor
     func testLexiconSeedIntoSQLite() async throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
@@ -33,7 +34,7 @@ final class VocabStoreTests: XCTestCase {
 
     @MainActor
     func testCachedGlossPersists() throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
@@ -42,8 +43,28 @@ final class VocabStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testCachedParadigmPersists() throws {
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let store = VocabStore(modelContext: container.mainContext)
+        let paradigm = WordParadigm(
+            kind: "cases",
+            rows: [
+                WordParadigmRow(nameEt: "nimetav", nameEn: "nominative", singular: "mees", plural: "mehed"),
+                WordParadigmRow(nameEt: "omastav", nameEn: "genitive", singular: "mehe", plural: "meeste"),
+            ]
+        )
+        try store.saveParadigm(forSurface: "mees", paradigm: paradigm)
+        let cached = try store.cachedParadigm(forSurface: "Mees")
+        XCTAssertEqual(cached?.kind, "cases")
+        XCTAssertEqual(cached?.rows.count, 2)
+        XCTAssertEqual(cached?.rows.first?.singular, "mees")
+    }
+
+    @MainActor
     func testMarkKnownWithBackoffSchedulesFutureDue() throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
@@ -72,7 +93,7 @@ final class VocabStoreTests: XCTestCase {
 
     @MainActor
     func testReviewSuccessDoublesInterval() throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
@@ -88,7 +109,7 @@ final class VocabStoreTests: XCTestCase {
 
     @MainActor
     func testMarkLearningDueSoonResetsKnown() throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)
@@ -102,7 +123,7 @@ final class VocabStoreTests: XCTestCase {
 
     @MainActor
     func testResetProgressClearsCardsKeepsGlosses() throws {
-        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self])
+        let schema = Schema([VocabCard.self, LexiconWord.self, CachedGloss.self, CachedParadigm.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let store = VocabStore(modelContext: container.mainContext)

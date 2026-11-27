@@ -36,11 +36,15 @@ public struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(40)
             case .session:
-                if let learning = engines.learning {
+                if let learning = engines.learning, let words = engines.words {
                     TabView {
+                        WordsSessionView(words: words)
+                            .tabItem {
+                                Label("Words", systemImage: "textformat.abc")
+                            }
                         LearningSessionView(learning: learning)
                             .tabItem {
-                                Label("Learn", systemImage: "text.bubble")
+                                Label("Tutor", systemImage: "text.bubble")
                             }
                         TranslateView(learning: learning)
                             .tabItem {
@@ -75,6 +79,7 @@ public struct RootView: View {
 final class EngineHolder {
     private(set) var tutor: TutorEngine?
     private(set) var learning: LearningEngine?
+    private(set) var words: WordsEngine?
     private(set) var setupFailure: SetupFailure?
     /// Mirrors the tutor's warmup completion: nested engine observation does not
     /// automatically drive `SetupPresentation` unless readiness lives on this holder.
@@ -129,9 +134,17 @@ final class EngineHolder {
                 speaker: speaker,
                 modelPaths: paths
             )
+            let words = WordsEngine(
+                vocab: store,
+                recognizer: whisper,
+                languageModel: llama
+            )
             self.tutor = tutor
             self.learning = learning
+            self.words = words
             await learning.bootstrap()
+            try words.refreshProgress()
+            words.startNextWord()
             try await tutor.warmupModels()
             isReady = true
         } catch {
@@ -144,17 +157,537 @@ final class EngineHolder {
     }
 }
 
+/// Words mode: reveal a lemma, then mixed form drills.
+private struct WordsSessionView: View {
+    var words: WordsEngine
+    @State private var confirmReset = false
+    @State private var knownFilter = ""
+    @FocusState private var typeFocused: Bool
+
+    private var filteredKnownCards: [VocabCard] {
+        let query = knownFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return words.knownCards }
+        return words.knownCards.filter { card in
+            card.lemma.lowercased().contains(query)
+                || card.surfaceForm.lowercased().contains(query)
+                || card.glossEnglish.lowercased().contains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List {
+                Section("You") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(words.progress.levelLabel)
+                            .font(.title3.weight(.semibold))
+                        Text("\(words.progress.knownCount) known · \(words.progress.learningCount) learning")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Words · \(words.wordsLevel.rawValue)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 4)
+
+                    Button(role: .destructive) {
+                        confirmReset = true
+                    } label: {
+                        Label("Reset progress", systemImage: "arrow.counterclockwise")
+                    }
+                }
+
+                Section("Learning") {
+                    if words.learningCards.isEmpty {
+                        Text("Nothing in learning yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(words.learningCards) { card in
+                            Button {
+                                words.practiceWord(card.lemma)
+                            } label: {
+                                vocabRow(card)
+                            }
+                        }
+                    }
+                }
+
+                Section("Known") {
+                    if words.knownCards.count > 8 {
+                        TextField("Search known…", text: $knownFilter)
+                    }
+                    if words.knownCards.isEmpty {
+                        Text("No known words yet — finish a form drill.")
+                            .foregroundStyle(.secondary)
+                    } else if filteredKnownCards.isEmpty {
+                        Text("No matches.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(filteredKnownCards) { card in
+                            Button {
+                                words.practiceWord(card.lemma)
+                            } label: {
+                                vocabRow(card)
+                            }
+                        }
+                    }
+                }
+
+                Section("Session") {
+                    if let entry = words.entry {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.lemma).font(.headline)
+                                Text(words.glossEnglish.isEmpty ? (entry.cefr?.rawValue ?? "") : words.glossEnglish)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "textformat")
+                        }
+                    }
+
+                    if words.phase == .loading || words.isLoadingDrills || words.isLoadingParadigm {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(words.statusDetail.isEmpty ? "Loading…" : words.statusDetail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if words.phase != .loading {
+                        Button("Next word") {
+                            words.startNextWord()
+                        }
+                        .disabled(words.isLoadingDrills || words.isLoadingParadigm)
+                    }
+                }
+            }
+            .navigationTitle("Words")
+            .frame(minWidth: 260)
+            .confirmationDialog(
+                "Reset all progress?",
+                isPresented: $confirmReset,
+                titleVisibility: .visible
+            ) {
+                Button("Reset progress", role: .destructive) {
+                    words.resetProgress()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This clears known and learning words and starts again from zero. This cannot be undone.")
+            }
+        } detail: {
+            wordsDetail
+        }
+        .onAppear {
+            try? words.refreshProgress()
+        }
+    }
+
+    private func vocabRow(_ card: VocabCard) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(card.surfaceForm.isEmpty ? card.lemma : card.surfaceForm)
+                .font(.headline)
+            if !card.glossEnglish.isEmpty {
+                Text(card.glossEnglish)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var wordsDetail: some View {
+        switch words.phase {
+        case .loading:
+            ContentUnavailableView {
+                Label("Preparing forms", systemImage: "textformat.abc")
+            } description: {
+                Text(words.statusDetail.isEmpty
+                     ? "Asking EstLLM for the common forms of the next word."
+                     : words.statusDetail)
+            }
+        case .reveal:
+            if let entry = words.entry {
+                revealView(entry: entry)
+            }
+        case .drilling, .recording, .grading, .itemFeedback:
+            drillView
+        case .wordComplete:
+            wordCompleteView
+        case .error(let message):
+            ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(message))
+        case .idle:
+            ContentUnavailableView(
+                "No more words here",
+                systemImage: "checkmark.circle",
+                description: Text("You’ve covered the current band, or the lexicon is empty. Try Tutor with what you know.")
+            )
+        }
+    }
+
+    private func revealView(entry: LexiconEntry) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text(entry.lemma)
+                    .font(.largeTitle.weight(.bold))
+                if !words.glossEnglish.isEmpty {
+                    Text(words.glossEnglish)
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 12) {
+                    if let cefr = entry.cefr {
+                        Text(cefr.rawValue)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    }
+                    if let pos = entry.posDisplayLabel {
+                        Text(pos)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let paradigm = words.pack?.paradigm, !paradigm.rows.isEmpty {
+                    paradigmTable(paradigm)
+                } else if words.isLoadingParadigm {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading case table…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                }
+
+                Text("You’ll practice the most common forms of this word — chips, typing, and speaking.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button {
+                    words.beginDrills()
+                } label: {
+                    if words.isLoadingDrills {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Preparing drills…")
+                        }
+                    } else {
+                        Text("Practice forms")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!words.canPractice)
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func paradigmTable(_ paradigm: WordParadigm) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(paradigm.isVerb ? "Pööramine" : "Käänded")
+                .font(.headline)
+            Text(paradigm.isVerb ? "Conjugation" : "All 14 cases · ainsus / mitmus")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                GridRow {
+                    Text("Kääne")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(paradigm.isVerb ? "Vorm" : "Ainsus")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if paradigm.isCases {
+                        Text("Mitmus")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Divider()
+                ForEach(paradigm.rows) { row in
+                    GridRow {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(row.nameEt)
+                                .font(.callout.weight(.medium))
+                            if !row.nameEn.isEmpty {
+                                Text(row.nameEn)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        Text(row.singular.isEmpty ? "—" : row.singular)
+                            .font(.body.monospaced())
+                            .textSelection(.enabled)
+                        if paradigm.isCases {
+                            Text(row.plural.isEmpty ? "—" : row.plural)
+                                .font(.body.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    @ViewBuilder
+    private var drillView: some View {
+        if let drill = words.currentDrill {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Form \(words.drillIndex + 1) of \(words.drills.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(drill.form.label)
+                    .font(.headline)
+                Text(drill.form.cloze)
+                    .font(.title2.weight(.semibold))
+                Text(drill.form.clozeEnglish)
+                    .foregroundStyle(.secondary)
+
+                if words.phase == .itemFeedback {
+                    feedbackBlock(for: drill)
+                } else {
+                    modalityControls(for: drill)
+                }
+                Spacer()
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            ContentUnavailableView("No drills", systemImage: "questionmark.circle")
+        }
+    }
+
+    @ViewBuilder
+    private func modalityControls(for drill: WordDrillItem) -> some View {
+        switch drill.modality {
+        case .chips:
+            Text("Pick the form that fills the blank.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 10)], spacing: 10) {
+                ForEach(drill.chipOptions, id: \.self) { option in
+                    Button(option) {
+                        words.submitChip(option)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        case .type:
+            Text("Type the missing form.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            TextField("form", text: Binding(
+                get: { words.typedAnswer },
+                set: { words.setTypedAnswer($0) }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(.title3)
+            .focused($typeFocused)
+            .onAppear { typeFocused = true }
+            .onSubmit { words.submitTyped() }
+            Button("Check") {
+                words.submitTyped()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(words.typedAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        case .speak:
+            Text("Say the missing form (or the whole sentence).")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if let asrError = words.lastASRError {
+                Text(asrError)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+            switch words.phase {
+            case .recording:
+                Button("Stop & check") {
+                    Task { await words.stopSpeakingAndGrade() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            case .grading:
+                ProgressView("Listening…")
+            default:
+                Button("Speak") {
+                    Task { await words.startSpeaking() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func feedbackBlock(for drill: WordDrillItem) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(words.lastAnswerCorrect == true ? "Correct" : "Not quite")
+                .font(.headline)
+                .foregroundStyle(words.lastAnswerCorrect == true ? Color.green : Color.orange)
+            Text("Answer: \(drill.form.surface)")
+                .font(.title3.weight(.semibold))
+            if !drill.form.reason.isEmpty {
+                Text(drill.form.reason)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if !words.lastTranscript.isEmpty {
+                Text("You said: \(words.lastTranscript)")
+                    .foregroundStyle(.secondary)
+            }
+            Button("Continue") {
+                words.continueAfterFeedback()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            (words.lastAnswerCorrect == true ? Color.green : Color.orange).opacity(0.12),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+    }
+
+    private var wordCompleteView: some View {
+        let passed = words.wordPassed
+        return VStack(spacing: 16) {
+            Image(systemName: passed ? "checkmark.circle.fill" : "arrow.counterclockwise.circle.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(passed ? Color.green : Color.orange)
+            Text(words.entry?.lemma ?? "Word")
+                .font(.largeTitle.weight(.bold))
+            Text("\(words.correctCount) / \(words.attemptedCount) forms correct")
+                .foregroundStyle(.secondary)
+            Text(passed
+                  ? "Marked known — keep going."
+                  : "Stays in learning for more practice.")
+                .font(.callout)
+            if passed {
+                Button("Next word") {
+                    words.continueAfterWordComplete()
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Retry") {
+                    words.retryCurrentWord()
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button("Retry") {
+                    words.retryCurrentWord()
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Skip to next word") {
+                    words.continueAfterWordComplete()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(32)
+    }
+}
+
+/// One past Translate session shown in the sidebar.
+private struct TranslationHistoryEntry: Identifiable, Codable, Hashable {
+    let id: UUID
+    let source: String
+    let result: TextTranslationResult
+    let createdAt: Date
+
+    init(id: UUID = UUID(), source: String, result: TextTranslationResult, createdAt: Date = Date()) {
+        self.id = id
+        self.source = source
+        self.result = result
+        self.createdAt = createdAt
+    }
+
+    var previewSource: String {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 48 { return trimmed }
+        return String(trimmed.prefix(45)) + "…"
+    }
+
+    var previewEnglish: String {
+        let trimmed = result.translation.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 56 { return trimmed }
+        return String(trimmed.prefix(53)) + "…"
+    }
+}
+
 /// Free-form Estonian → English translation via EstLLM.
 private struct TranslateView: View {
+    private static let historyDefaultsKey = "ezeesti.translate.history"
+    private static let maxHistoryCount = 40
+
     var learning: LearningEngine
     @State private var input = ""
     @State private var result: TextTranslationResult?
     @State private var errorMessage: String?
     @State private var isTranslating = false
+    @State private var history: [TranslationHistoryEntry] = []
+    @State private var selectedHistoryID: UUID?
+    @State private var confirmClearHistory = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
-        NavigationStack {
+        NavigationSplitView {
+            List(selection: $selectedHistoryID) {
+                Section("History") {
+                    if history.isEmpty {
+                        Text("No translations yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(history) { entry in
+                            Button {
+                                restore(entry)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.previewSource)
+                                        .font(.headline)
+                                        .lineLimit(2)
+                                    Text(entry.previewEnglish)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                            .tag(entry.id)
+                        }
+                        .onDelete(perform: deleteHistory)
+                    }
+                }
+
+                if !history.isEmpty {
+                    Section {
+                        Button("Clear history", role: .destructive) {
+                            confirmClearHistory = true
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Translate")
+            .frame(minWidth: 260)
+            .confirmationDialog(
+                "Clear translation history?",
+                isPresented: $confirmClearHistory,
+                titleVisibility: .visible
+            ) {
+                Button("Clear history", role: .destructive) {
+                    history = []
+                    selectedHistoryID = nil
+                    persistHistory()
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+        } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Paste or type Estonian text. EstLLM translates it and explains each phrase.")
@@ -204,8 +737,10 @@ private struct TranslateView: View {
                 .padding(32)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .navigationTitle("Translate")
             .onAppear { inputFocused = true }
+        }
+        .onAppear {
+            loadHistory()
         }
     }
 
@@ -233,6 +768,7 @@ private struct TranslateView: View {
                 input = ""
                 result = nil
                 errorMessage = nil
+                selectedHistoryID = nil
                 inputFocused = true
             }
             .disabled(isTranslating || !hasContent)
@@ -248,10 +784,56 @@ private struct TranslateView: View {
         result = nil
         defer { isTranslating = false }
         do {
-            result = try await learning.translateEstonian(source)
+            let translation = try await learning.translateEstonian(source)
+            result = translation
+            remember(source: source, result: translation)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func remember(source: String, result: TextTranslationResult) {
+        let normalized = EstonianTokenizer.normalize(source)
+        history.removeAll {
+            EstonianTokenizer.normalize($0.source) == normalized
+                && $0.result.translation == result.translation
+        }
+        let entry = TranslationHistoryEntry(source: source, result: result)
+        history.insert(entry, at: 0)
+        if history.count > Self.maxHistoryCount {
+            history = Array(history.prefix(Self.maxHistoryCount))
+        }
+        selectedHistoryID = entry.id
+        persistHistory()
+    }
+
+    private func restore(_ entry: TranslationHistoryEntry) {
+        selectedHistoryID = entry.id
+        input = entry.source
+        result = entry.result
+        errorMessage = nil
+        inputFocused = false
+    }
+
+    private func deleteHistory(at offsets: IndexSet) {
+        let removedIDs = Set(offsets.map { history[$0].id })
+        history.remove(atOffsets: offsets)
+        if let selectedHistoryID, removedIDs.contains(selectedHistoryID) {
+            self.selectedHistoryID = nil
+        }
+        persistHistory()
+    }
+
+    private func loadHistory() {
+        guard let data = UserDefaults.standard.data(forKey: Self.historyDefaultsKey) else { return }
+        if let decoded = try? JSONDecoder().decode([TranslationHistoryEntry].self, from: data) {
+            history = decoded
+        }
+    }
+
+    private func persistHistory() {
+        guard let data = try? JSONEncoder().encode(history) else { return }
+        UserDefaults.standard.set(data, forKey: Self.historyDefaultsKey)
     }
 }
 
@@ -321,9 +903,41 @@ public struct LearningSessionView: View {
                     }
                 }
 
+                Section("Speak next") {
+                    if !learning.canStartTutor {
+                        Text("Learn words first in Words mode.")
+                            .foregroundStyle(.secondary)
+                    } else if learning.tutorQueue.isEmpty {
+                        Text("All current words have been spoken here.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("From Words + learning — not spoken in Tutor yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(learning.tutorQueue.prefix(12)) { card in
+                            Button {
+                                learning.startTutorFocus(lemma: card.lemma)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(card.surfaceForm.isEmpty ? card.lemma : card.surfaceForm)
+                                        .font(.headline)
+                                    if !card.glossEnglish.isEmpty {
+                                        Text(card.glossEnglish)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section("Needs review") {
-                    if learning.dueCount == 0 {
-                        Text("Nothing due — keep reading.")
+                    if !learning.canStartTutor {
+                        Text("Learn words first in Words mode.")
+                            .foregroundStyle(.secondary)
+                    } else if learning.dueCount == 0 {
+                        Text("Nothing due — keep speaking.")
                             .foregroundStyle(.secondary)
                     } else {
                         Button {
@@ -375,10 +989,11 @@ public struct LearningSessionView: View {
                         Button("New sentence") {
                             learning.continueRecommendedReading()
                         }
+                        .disabled(!learning.canStartTutor)
                     }
                 }
             }
-            .navigationTitle("ezeesti")
+            .navigationTitle("Tutor")
             .frame(minWidth: 260)
             .confirmationDialog(
                 "Reset all progress?",
@@ -399,7 +1014,7 @@ public struct LearningSessionView: View {
                     Label("Writing your next sentence", systemImage: "text.badge.plus")
                 } description: {
                     Text(learning.generationDetail.isEmpty
-                         ? "Drafting and checking one short sentence around the next word."
+                         ? "Drafting one short sentence around a word you already know."
                          : learning.generationDetail)
                 }
             case .reading, .speakingSummary, .recordingSummary, .transcribing, .grading, .summaryFeedback, .completed:
@@ -407,11 +1022,26 @@ public struct LearningSessionView: View {
             case .error(let message):
                 ContentUnavailableView("Error", systemImage: "exclamationmark.triangle", description: Text(message))
             default:
-                ContentUnavailableView(
-                    "Read → look up → speak",
-                    systemImage: "text.bubble",
-                    description: Text("Tap a word for its meaning. Flag ones you need help with, then read the sentence aloud.")
-                )
+                if learning.canStartTutor {
+                    ContentUnavailableView(
+                        "Speak what you know",
+                        systemImage: "text.bubble",
+                        description: Text("Tutor builds a simple sentence from words you’ve learned in Words mode. Tap a word for its meaning, then read aloud.")
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "Learn a few words first",
+                        systemImage: "textformat.abc",
+                        description: Text("Switch to Words to learn lemmas and forms. Tutor unlocks once you have vocabulary to speak.")
+                    )
+                }
+            }
+        }
+        .onAppear {
+            try? learning.refreshProgress()
+            learning.refreshFamiliarity()
+            if learning.selectedText == nil, learning.canStartTutor, !learning.isGeneratingPassage {
+                learning.continueRecommendedReading()
             }
         }
     }
@@ -463,7 +1093,7 @@ private struct ReadingDetailView: View {
                         }
                         .font(.subheadline)
 
-                        Text("Built around one word you still need")
+                        Text("Built around a word you already know")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
 

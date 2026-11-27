@@ -20,6 +20,43 @@ public struct LexiconEntry: Codable, Sendable, Hashable, Identifiable {
         self.isPassageFocusCandidate = Self.focusCandidate(pos: pos)
     }
 
+    /// Human-readable POS for UI, e.g. `s` → `substantiiv / noun`.
+    public var posDisplayLabel: String? {
+        Self.displayPOS(pos)
+    }
+
+    /// Maps coarse lexicon POS tags into Estonian + English labels for learners.
+    public static func displayPOS(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let tags = raw.lowercased()
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !tags.isEmpty else { return nil }
+
+        let labels = tags.map { tag -> String in
+            switch tag {
+            case "s": return "substantiiv / noun"
+            case "v": return "tegusõna / verb"
+            case "adj", "adjg": return "omadussõna / adjective"
+            case "adv": return "määrsõna / adverb"
+            case "pron": return "asesõna / pronoun"
+            case "num": return "arvsõna / numeral"
+            case "conj", "konj": return "sidesõna / conjunction"
+            case "prep", "pre", "adp": return "kaassõna / adposition"
+            case "interj", "int": return "hüüdsõna / interjection"
+            default: return tag
+            }
+        }
+        // Deduplicate while preserving order (adj,adjg → one adjective label).
+        var seen = Set<String>()
+        var unique: [String] = []
+        for label in labels where seen.insert(label).inserted {
+            unique.append(label)
+        }
+        return unique.joined(separator: ", ")
+    }
+
     private static func focusCandidate(pos: String?) -> Bool {
         guard let pos, !pos.isEmpty else { return false }
         let tags = pos.lowercased()

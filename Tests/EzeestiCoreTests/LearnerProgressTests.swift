@@ -92,6 +92,78 @@ final class LearnerProgressTests: XCTestCase {
         }
     }
 
+    func testWordsWorkingLevelCapsAtB2() {
+        let progress = LearnerProgress(
+            knownCount: 10,
+            learningCount: 0,
+            dueCount: 0,
+            workingLevel: .c1,
+            levelLabel: "C1",
+            coverageByLevel: [:],
+            knownByLevel: [:],
+            lexiconByLevel: [:]
+        )
+        XCTAssertEqual(LearnerProgress.wordsWorkingLevel(from: progress), .b2)
+    }
+
+    func testTutorTargetsOnlyKnownOrLearning() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let known: Set<String> = ["ema", "isa", "ma", "ja", "on"]
+        let targets = LearnerProgress.targetLemmasForTutor(
+            workingLevel: .a1,
+            knownLemmas: known,
+            learningLemmas: ["tere"],
+            dueLemmas: ["tere"],
+            limit: 3
+        )
+        XCTAssertFalse(targets.isEmpty)
+        for entry in targets {
+            let key = EstonianTokenizer.normalize(entry.lemma)
+            XCTAssertTrue(known.contains(key) || key == "tere")
+        }
+    }
+
+    func testTutorReturnsEmptyWithoutVocab() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForTutor(
+            workingLevel: .a1,
+            knownLemmas: [],
+            learningLemmas: [],
+            limit: 3
+        )
+        XCTAssertTrue(targets.isEmpty)
+    }
+
+    func testTutorPrefersWordsOnlyLemmasOverAlreadySpokenDue() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        // "ema" known from Words but never spoken in Tutor; "mees" is due/learning but already spoken.
+        let targets = LearnerProgress.targetLemmasForTutor(
+            workingLevel: .a1,
+            knownLemmas: ["ema", "mees"],
+            learningLemmas: ["mees"],
+            dueLemmas: ["mees"],
+            tutorPracticedLemmas: ["mees"],
+            preferDueFirst: false,
+            limit: 1
+        )
+        XCTAssertEqual(targets.count, 1)
+        XCTAssertEqual(EstonianTokenizer.normalize(targets[0].lemma), "ema")
+    }
+
+    func testTutorPreferDueFirstHonorsReview() {
+        LexiconCatalog.shared.loadBundledIfNeeded()
+        let targets = LearnerProgress.targetLemmasForTutor(
+            workingLevel: .a1,
+            knownLemmas: ["ema", "mees"],
+            learningLemmas: ["mees"],
+            dueLemmas: ["mees"],
+            tutorPracticedLemmas: ["mees"],
+            preferDueFirst: true,
+            limit: 1
+        )
+        XCTAssertEqual(EstonianTokenizer.normalize(targets[0].lemma), "mees")
+    }
+
     func testTargetLemmasDefaultLimitIsOne() {
         LexiconCatalog.shared.loadBundledIfNeeded()
         let targets = LearnerProgress.targetLemmasForPassage(

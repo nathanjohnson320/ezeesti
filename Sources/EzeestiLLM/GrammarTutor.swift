@@ -2,8 +2,7 @@ import Foundation
 import EzeestiCore
 
 public protocol LanguageModeling: Sendable {
-    /// - Parameter temperature: Overrides the model default; used to resample
-    ///   when a first, low-temperature draft fails validation.
+    /// - Parameter temperature: Overrides the model default sampling temperature.
     func complete(
         system: String,
         user: String,

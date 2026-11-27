@@ -80,7 +80,9 @@ public struct WordLookup: Sendable, Equatable {
     public var subtitle: String {
         var parts: [String] = []
         if let cefr { parts.append(cefr.rawValue) }
-        if !pos.isEmpty { parts.append(pos) }
+        if let posLabel = LexiconEntry.displayPOS(pos) {
+            parts.append(posLabel)
+        }
         if let learnerStatus {
             parts.append(learnerStatus.rawValue)
         } else {
