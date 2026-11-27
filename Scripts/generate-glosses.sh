@@ -16,7 +16,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS="${EZEESTI_MODELS:-$HOME/Library/Application Support/Ezeesti/Models}"
 LIB_DIR="$MODELS/native/llama/lib"
 DYLIB="$LIB_DIR/libEzeestiLlama.dylib"
-GGUF="$MODELS/llm/Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"
+LLM_DIR="$MODELS/llm"
+# Priority order matches Sources/EzeestiCore/Models.swift (70B then 8B).
+LLM_70B_FILE="Llama-3.1-EstLLM-70B-Instruct-0826.Q4_K_M.gguf"
+LLM_8B_FILE="Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"
+LLM_70B_MIN_GIB=48
 LEXICON="$ROOT/Sources/EzeestiCore/Resources/Lexicon/estonian-top10k.json"
 OUT="$ROOT/Sources/EzeestiCore/Resources/Lexicon/word-glosses.json"
 TEXTS_DIR="$ROOT/Sources/EzeestiCore/Resources/Texts"
@@ -24,6 +28,36 @@ CACHE="$ROOT/.cache/gloss-gen"
 CEFR_FILTER="${CEFR:-A1,A2,B1,B2}"
 LIMIT="${LIMIT:-0}"
 BATCH="${BATCH:-20}"
+
+physical_ram_gib() {
+  local bytes
+  bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+  echo $(( bytes / 1024 / 1024 / 1024 ))
+}
+
+# Mirror ModelPaths.resolveEstLLMGGUF: override → best fit for RAM → largest installed.
+resolve_gguf() {
+  if [[ -n "${EZEESTI_LLM_GGUF:-}" && -f "${EZEESTI_LLM_GGUF}" ]]; then
+    echo "${EZEESTI_LLM_GGUF}"
+    return
+  fi
+  local gib
+  gib="$(physical_ram_gib)"
+  local best_fit="" best_any=""
+  if [[ -f "$LLM_DIR/$LLM_70B_FILE" ]]; then
+    best_any="$LLM_DIR/$LLM_70B_FILE"
+    if [[ "$gib" -ge "$LLM_70B_MIN_GIB" ]]; then
+      best_fit="$LLM_DIR/$LLM_70B_FILE"
+    fi
+  fi
+  if [[ -f "$LLM_DIR/$LLM_8B_FILE" ]]; then
+    [[ -n "$best_any" ]] || best_any="$LLM_DIR/$LLM_8B_FILE"
+    if [[ -z "$best_fit" ]]; then
+      best_fit="$LLM_DIR/$LLM_8B_FILE"
+    fi
+  fi
+  echo "${best_fit:-$best_any}"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,14 +69,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+GGUF="$(resolve_gguf)"
+
 if [[ ! -f "$DYLIB" ]]; then
   echo "Missing $DYLIB — run ./Scripts/fetch-models.sh" >&2
   exit 1
 fi
-if [[ ! -f "$GGUF" ]]; then
-  echo "Missing EstLLM GGUF at $GGUF — run ./Scripts/fetch-models.sh" >&2
+if [[ -z "$GGUF" || ! -f "$GGUF" ]]; then
+  echo "Missing EstLLM GGUF under $LLM_DIR — run ./Scripts/fetch-models.sh" >&2
   exit 1
 fi
+echo "Using EstLLM GGUF: $GGUF"
 if [[ ! -f "$LEXICON" ]]; then
   echo "Missing lexicon $LEXICON — run ./Scripts/fetch-lexicon.sh" >&2
   exit 1

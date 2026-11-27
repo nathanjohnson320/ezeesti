@@ -14,6 +14,73 @@ extension TextSpeaking {
     public func prepare() async throws {}
 }
 
+/// Prefer Neurokõne when `neurokone-cli` is installed; otherwise use macOS `AVSpeechSynthesizer`.
+public enum TTSBackend {
+    public static func resolve(modelPaths paths: ModelPaths) -> any TextSpeaking {
+        if let cli = paths.neurokoneBinary,
+           FileManager.default.isExecutableFile(atPath: cli.path) {
+            return NeurokoneTTSService(binaryPath: cli)
+        }
+        return SystemSpeechTTSService()
+    }
+}
+
+/// Built-in macOS speech — works without gated Neurokõne weights (pronunciation is weaker).
+public struct SystemSpeechTTSService: TextSpeaking {
+    public init() {}
+
+    public func speak(_ text: String, languageCode: String) async throws {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await SystemSpeechPlayer.shared.speak(trimmed, languageCode: languageCode)
+    }
+}
+
+@MainActor
+final class SystemSpeechPlayer: NSObject, AVSpeechSynthesizerDelegate {
+    static let shared = SystemSpeechPlayer()
+
+    private let synthesizer = AVSpeechSynthesizer()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    private override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func speak(_ text: String, languageCode: String) async {
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+            continuation?.resume()
+            continuation = nil
+        }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            continuation = cont
+            let utterance = AVSpeechUtterance(string: text)
+            let lang = languageCode.isEmpty ? "et-EE" : languageCode
+            utterance.voice = AVSpeechSynthesisVoice(language: lang)
+                ?? AVSpeechSynthesisVoice(language: "et-EE")
+                ?? AVSpeechSynthesisVoice(language: "en-US")
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9
+            synthesizer.speak(utterance)
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+}
+
 /// Keeps one Neurokõne Python process alive so TensorFlow/HiFi-GAN load once per app launch.
 /// Injected by `NeurokoneTTSService` (no process-global singleton).
 public actor NeurokoneSession {

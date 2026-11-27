@@ -108,16 +108,11 @@ final class EngineHolder {
             else {
                 throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
             }
-            guard let neurokone = paths.neurokoneBinary,
-                  FileManager.default.isExecutableFile(atPath: neurokone.path)
-            else {
-                throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
-            }
-
             // One shared native stack for tutor + learning (avoid double Metal residency).
             let whisper = WhisperCppService(modelPath: whisperModel, libDir: whisperLib)
             let llama = LlamaCppService(modelPath: llamaModel, libDir: llamaLib)
-            let speaker = NeurokoneTTSService(binaryPath: neurokone)
+            // Neurokõne when available; otherwise macOS system speech (no gated HF access needed).
+            let speaker = TTSBackend.resolve(modelPaths: paths)
 
             let tutor = try TutorEngine(
                 modelPaths: paths,

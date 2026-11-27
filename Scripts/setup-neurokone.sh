@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CACHE="$ROOT/.cache"
 WORKER="$CACHE/text-to-speech-worker"
+WORKER_TAG="${NEUROKONE_WORKER_TAG:-v3.2.0}"
 VENV="$CACHE/neurokone-venv"
 MODELS_TTS="${EZEESTI_MODELS_DIR:-$HOME/Library/Application Support/Ezeesti/Models}/tts/multispeaker"
 BIN_DIR="${EZEESTI_MODELS_DIR:-$HOME/Library/Application Support/Ezeesti/Models}/bin"
@@ -39,15 +40,27 @@ echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN --version))"
 
 if [[ ! -f "$MODELS_TTS/model_weights.hdf5" ]]; then
   echo "Missing TTS weights at $MODELS_TTS"
-  echo "Run ./Scripts/fetch-models.sh first (or SKIP_BUILD_BINARIES=1 ./Scripts/fetch-models.sh)."
+  echo "Run ./Scripts/fetch-models.sh first (needs HF_TOKEN for gated tartuNLP/fastpitch-est)."
   exit 1
 fi
 
-if [[ ! -d "$WORKER/.git" ]]; then
-  echo "==> Cloning TartuNLP text-to-speech-worker v3.1.0"
-  git clone --depth 1 --branch v3.1.0 --recurse-submodules \
+ensure_worker_checkout() {
+  local current=""
+  if [[ -d "$WORKER/.git" ]]; then
+    current="$(git -C "$WORKER" describe --tags --exact-match 2>/dev/null || git -C "$WORKER" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+    if [[ "$current" == "$WORKER_TAG" ]]; then
+      echo "✓ text-to-speech-worker already at $WORKER_TAG"
+      return
+    fi
+    echo "==> Existing checkout is ${current}; replacing with ${WORKER_TAG}"
+    rm -rf "$WORKER"
+  fi
+  echo "==> Cloning TartuNLP text-to-speech-worker ${WORKER_TAG}"
+  git clone --depth 1 --branch "$WORKER_TAG" --recurse-submodules \
     https://github.com/TartuNLP/text-to-speech-worker.git "$WORKER"
-fi
+}
+
+ensure_worker_checkout
 
 mkdir -p "$WORKER/models" "$BIN_DIR"
 ln -sfn "$MODELS_TTS" "$WORKER/models/multispeaker"
@@ -70,13 +83,14 @@ fi
 source "$VENV/bin/activate"
 python -m pip install --upgrade pip wheel setuptools
 
-echo "==> Installing Neurokõne dependencies (this can take several minutes)"
+echo "==> Installing Neurokõne dependencies for ${WORKER_TAG} (this can take several minutes)"
 # Prefer Apple Silicon TF when classic tensorflow wheel is unavailable.
 if ! python -m pip install "tensorflow==2.13.0"; then
   echo "tensorflow==2.13.0 unavailable; trying tensorflow-macos==2.13.0"
   python -m pip install "tensorflow-macos==2.13.0"
 fi
 
+# Match v3.2.0 requirements.txt, but use stock macOS PyTorch wheels (not cu118).
 python -m pip install \
   "librosa==0.11.0" \
   "ruamel.yaml" \
@@ -87,13 +101,14 @@ python -m pip install \
   "python-dotenv" \
   "scipy" \
   "numpy" \
-  "speechbrain==1.0.2" \
+  "speechbrain==1.0.3" \
   "torch==2.1.2" \
   "torchaudio==2.1.2" \
   "huggingface-hub==0.29.2" \
   "PyYAML" \
   "typing-extensions>=4.14.1" \
-  "git+https://github.com/TartuNLP/tts_preprocess_et.git@v1.1.0"
+  "git+https://github.com/TartuNLP/tts_preprocess_et.git@v1.1.1" \
+  "git+https://github.com/TartuNLP/tts_preprocess_smugri.git@54fa996"
 
 python - <<'PY'
 import nltk
@@ -113,6 +128,9 @@ VENV="$VENV"
 export EZEESTI_TTS_WORKER_ROOT="$WORKER"
 export EZEESTI_TTS_MODEL_DIR="$MODELS_TTS"
 export TF_CPP_MIN_LOG_LEVEL=2
+export TF_ENABLE_ONEDNN_OPTS=0
+# Cap input length (v3.2.0 reads TTS_MAX_INPUT_LENGTH instead of a ctor arg).
+export TTS_MAX_INPUT_LENGTH="\${TTS_MAX_INPUT_LENGTH:-180}"
 # shellcheck disable=SC1091
 source "\$VENV/bin/activate"
 exec python "\$ROOT/Scripts/neurokone_synthesize.py" "\$@"

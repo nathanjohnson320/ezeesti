@@ -108,14 +108,7 @@ public final class TutorEngine {
             throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
         }
 
-        if let speaker {
-            self.speaker = speaker
-        } else if let cli = paths.neurokoneBinary,
-                  FileManager.default.isExecutableFile(atPath: cli.path) {
-            self.speaker = NeurokoneTTSService(binaryPath: cli)
-        } else {
-            throw EzeestiError.modelMissing("neurokone-cli. Run Scripts/setup-neurokone.sh")
-        }
+        self.speaker = speaker ?? TTSBackend.resolve(modelPaths: paths)
 
         // Free Metal-backed models before process teardown (avoids ggml residency-set assert).
         terminateObserver = NotificationCenter.default.addObserver(

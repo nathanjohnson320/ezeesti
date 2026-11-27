@@ -7,7 +7,7 @@ Speak → Whisper transcribes → EstLLM explains the grammar "why" → hear the
 ## Requirements
 
 - macOS 14+, Xcode 16+, Apple Silicon
-- ~7 GB free disk for models
+- Disk for models: ~7 GB with EstLLM 8B, or ~50 GB when auto-selecting EstLLM 70B (≥48 GiB RAM)
 - `brew install cmake git python@3.10`
 
 Neurokõne needs Python 3.9–3.11 specifically — TensorFlow 2.13 publishes no wheels for 3.12+. A newer default `python3` will fail with `No matching distribution found for tensorflow`.
@@ -18,13 +18,27 @@ Neurokõne needs Python 3.9–3.11 specifically — TensorFlow 2.13 publishes no
 
 ```bash
 chmod +x Scripts/*.sh
-./Scripts/fetch-models.sh       # Whisper + EstLLM weights + in-process dylibs (~7 GB, needs cmake)
-./Scripts/setup-neurokone.sh    # one-time Python venv for Neurokõne TTS (needs python3.10)
+# Without TartuNLP HF access (recommended default for local bring-up):
+SKIP_TTS=1 ./Scripts/fetch-models.sh   # Whisper + EstLLM + dylibs; Hear uses macOS speech
+# Optional Neurokõne later (gated tartuNLP/fastpitch-est — needs approved access + token):
+#   export HF_TOKEN=hf_…
+#   ./Scripts/fetch-models.sh && ./Scripts/setup-neurokone.sh
 ```
+
+`fetch-models.sh` picks EstLLM by physical RAM (`EZEESTI_LLM=auto`, default):
+
+| RAM | Model | Disk |
+| --- | --- | --- |
+| ≥48 GiB | `Llama-3.1-EstLLM-70B-Instruct-0826` Q4_K_M (~43 GB) | ~50 GB total |
+| &lt;48 GiB | `Llama-3.1-EstLLM-8B-Instruct-1125` Q4_K_M (~5 GB) | ~7 GB total |
+
+Override with `EZEESTI_LLM=8b|70b|both`, or point at a custom GGUF with `EZEESTI_LLM_GGUF=/path/to/model.gguf`. The app resolves the best *installed* GGUF the same way at launch.
+
+The 70B file is a community Q4_K_M of [tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826](https://huggingface.co/tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826); first load is slower than 8B.
 
 Everything lands in `~/Library/Application Support/Ezeesti/Models/`.
 
-> Already ran `fetch-models.sh`? Don't re-run it for TTS — just run `setup-neurokone.sh`.
+> Already have Whisper/EstLLM weights? You can still run `fetch-models.sh` — it skips existing files — then `setup-neurokone.sh` for the v3.2.0 Python worker.
 
 ### 2. Run the app
 

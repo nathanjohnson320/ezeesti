@@ -69,6 +69,8 @@ SPEAKERS = {
 
 def _make_synth(worker_root: Path, worker_models: Path):
     _bootstrap_paths(worker_root)
+    # v3.2.0: torch must be imported before tensorflow (CUDA/Metal init order).
+    import torch  # noqa: F401
     from tts_worker.config import ModelConfig
     from tts_worker.synthesizer import Synthesizer
 
@@ -78,8 +80,9 @@ def _make_synth(worker_root: Path, worker_models: Path):
         frontend="est",
         speakers=SPEAKERS,
     )
-    # Cap input length to skip the worker's slow probe loop on every cold start.
-    return Synthesizer(config, max_input_length=180)
+    # v3.2.0 dropped the max_input_length ctor arg; TTS_MAX_INPUT_LENGTH env caps cold start.
+    os.environ.setdefault("TTS_MAX_INPUT_LENGTH", "180")
+    return Synthesizer(config)
 
 
 def _synthesize(synth, text: str, out_path: Path, speaker: str, speed: float) -> Path:
@@ -90,8 +93,15 @@ def _synthesize(synth, text: str, out_path: Path, speaker: str, speed: float) ->
 
     request = Request(text=text, speaker=speaker, speed=speed)
     response = synth.process_request(request)
+    if response.content is None or response.content.audio is None:
+        raise RuntimeError("Neurokõne returned empty audio content")
+    audio = response.content.audio
+    if isinstance(audio, str):
+        import base64
+
+        audio = base64.b64decode(audio)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(response.content.audio)
+    out_path.write_bytes(audio)
     return out_path
 
 
