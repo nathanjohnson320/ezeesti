@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
     name: "Ezeesti",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         .library(name: "EzeestiCore", targets: ["EzeestiCore"]),
@@ -46,7 +46,14 @@ let package = Package(
         ),
         .target(
             name: "EzeestiUI",
-            dependencies: ["EzeestiCore", "EzeestiTutor", "EzeestiLearning"]
+            dependencies: [
+                "EzeestiCore",
+                "EzeestiASR",
+                "EzeestiLLM",
+                "EzeestiTTS",
+                "EzeestiTutor",
+                "EzeestiLearning",
+            ]
         ),
         .testTarget(
             name: "EzeestiCoreTests",

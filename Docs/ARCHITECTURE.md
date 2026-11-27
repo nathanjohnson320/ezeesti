@@ -29,10 +29,10 @@ The app home is **Learn only**. There is no hardcoded text catalog and no disk c
 
 ## Models
 
-Application Support `Ezeesti/Models/`: Whisper ggml, EstLLM GGUF, native dylibs, Neurokõne CLI when available.
+Application Support `Ezeesti/Models/` holds converted MLX directories for EstLLM + TalTech Whisper (and Neurokõne CLI when available). A required local OMLX server loads those dirs (`omlx serve --model-dir …`). The app calls `/v1/chat/completions` and `/v1/audio/transcriptions`.
 
 ## Later
 
-- One shared Whisper/EstLLM instance (warmup currently on TutorEngine)
 - Vabamorf lemmas
 - Phoneme pronunciation coaching
+- Streaming chat completions in the UI

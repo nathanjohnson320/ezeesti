@@ -1,31 +1,42 @@
 #!/usr/bin/env bash
-# Download offline models + build in-process whisper/llama umbrella dylibs for ezeesti.
+# Download Hugging Face weights one file at a time (curl + resume), then convert to MLX
+# for a required local OMLX server.
+#
+# Models land under Application Support and are meant to be served with:
+#   omlx serve --model-dir "$MODELS_DIR"
+#   # or copy/symlink into ~/.omlx/models and use the default omlx model dir
+#
+# Usage:
+#   ./Scripts/fetch-models.sh
+#   EZEESTI_LLM=8b|70b|both|auto ./Scripts/fetch-models.sh
+#   SKIP_TTS=1 ./Scripts/fetch-models.sh
+#   COPY_TO_OMLX=1 ./Scripts/fetch-models.sh   # also copy MLX dirs into ~/.omlx/models
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="${EZEESTI_MODELS_DIR:-$HOME/Library/Application Support/Ezeesti/Models}"
-VENDOR_DIR="${EZEESTI_VENDOR_DIR:-$ROOT/Vendor/native}"
 CACHE_DIR="${EZEESTI_CACHE_DIR:-$ROOT/.cache}"
-WHISPER_REPO="${WHISPER_REPO:-https://github.com/ggml-org/whisper.cpp.git}"
-WHISPER_TAG="${WHISPER_TAG:-v1.9.2}"
-LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
+HF_CACHE="${EZEESTI_HF_CACHE:-$CACHE_DIR/hf}"
+OMLX_MODELS_DIR="${EZEESTI_OMLX_MODELS_DIR:-$HOME/.omlx/models}"
+HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
+COPY_TO_OMLX="${COPY_TO_OMLX:-1}"
 
-WHISPER_HF="https://huggingface.co/TalTechNLP/whisper-large-v3-turbo-et-verbatim-2604/resolve/main/ggml/ggml-model.bin"
-# Neurokõne weights live on gated HF (GitHub release zips were removed after v3.0).
+# EstLLM catalog (directory names must match Sources/EzeestiCore/Models.swift).
+LLM_8B_HF="tartuNLP/Llama-3.1-EstLLM-8B-Instruct-1125"
+LLM_8B_DIR="Llama-3.1-EstLLM-8B-Instruct-1125-4bit"
+LLM_70B_HF="tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826"
+LLM_70B_DIR="Llama-3.1-EstLLM-70B-Instruct-0826-4bit"
+LLM_70B_MIN_GIB=48
+
+WHISPER_HF="TalTechNLP/whisper-large-v3-turbo-et-verbatim-2604"
+WHISPER_DIR="whisper-large-v3-turbo-et-verbatim-2604-mlx"
+
+# Neurokõne weights live on gated HF (optional; SKIP_TTS=1 to skip).
 TTS_HF_REPO="${TTS_HF_REPO:-tartuNLP/fastpitch-est}"
 TTS_HF_REVISION="${TTS_HF_REVISION:-main}"
 TTS_FILES=(config.yaml model_weights.hdf5)
-HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
 
-# EstLLM catalog (filenames must match Sources/EzeestiCore/Models.swift).
-LLM_8B_FILE="Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"
-LLM_8B_URL="https://huggingface.co/mradermacher/Llama-3.1-EstLLM-8B-Instruct-1125-GGUF/resolve/main/${LLM_8B_FILE}"
-LLM_70B_FILE="Llama-3.1-EstLLM-70B-Instruct-0826.Q4_K_M.gguf"
-# Community Q4_K_M of tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826 (HF blob name lacks quant suffix).
-LLM_70B_URL="https://huggingface.co/Dr-sdr/Llama-3.1-EstLLM-70B-Instruct-0826-GGUF/resolve/main/Llama-3.1-EstLLM-70B-Instruct-0826.gguf"
-LLM_70B_MIN_GIB=48
-
-mkdir -p "$MODELS_DIR/whisper" "$MODELS_DIR/llm" "$MODELS_DIR/tts" "$MODELS_DIR/bin" "$CACHE_DIR" "$VENDOR_DIR"
+mkdir -p "$MODELS_DIR/llm" "$MODELS_DIR/whisper" "$MODELS_DIR/tts" "$MODELS_DIR/bin" "$HF_CACHE"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -35,16 +46,32 @@ physical_ram_gib() {
   echo $(( bytes / 1024 / 1024 / 1024 ))
 }
 
-# Resolve which EstLLM GGUF(s) to download. EZEESTI_LLM=auto|8b|70b|both (default auto).
-# If EZEESTI_LLM_GGUF points at an existing file, skip LLM downloads.
+model_dir_ready() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 1
+  local count
+  count="$(find "$dir" -type f 2>/dev/null | head -n 1 | wc -l | tr -d ' ')"
+  [[ "$count" -ge 1 ]]
+}
+
+bytes_human() {
+  local b="${1:-0}"
+  if [[ "$b" -ge 1073741824 ]]; then
+    awk -v b="$b" 'BEGIN { printf "%.1f GiB", b/1073741824 }'
+  elif [[ "$b" -ge 1048576 ]]; then
+    awk -v b="$b" 'BEGIN { printf "%.1f MiB", b/1048576 }'
+  else
+    echo "${b} B"
+  fi
+}
+
+# Resolve which EstLLM variants to convert. EZEESTI_LLM=auto|8b|70b|both (default auto).
 resolve_llm_targets() {
   LLM_TARGETS=()
-  LLM_REQUIRED=()
   LLM_SELECTION_REASON=""
 
-  if [[ -n "${EZEESTI_LLM_GGUF:-}" && -f "${EZEESTI_LLM_GGUF}" ]]; then
-    LLM_SELECTION_REASON="EZEESTI_LLM_GGUF override → ${EZEESTI_LLM_GGUF}"
-    LLM_REQUIRED+=("${EZEESTI_LLM_GGUF}")
+  if [[ -n "${EZEESTI_LLM_DIR:-}" && -d "${EZEESTI_LLM_DIR}" ]]; then
+    LLM_SELECTION_REASON="EZEESTI_LLM_DIR override → ${EZEESTI_LLM_DIR}"
     return
   fi
 
@@ -75,338 +102,384 @@ resolve_llm_targets() {
       exit 1
       ;;
   esac
-
-  local id
-  for id in "${LLM_TARGETS[@]}"; do
-    case "$id" in
-      8b)  LLM_REQUIRED+=("$MODELS_DIR/llm/$LLM_8B_FILE") ;;
-      70b) LLM_REQUIRED+=("$MODELS_DIR/llm/$LLM_70B_FILE") ;;
-    esac
-  done
 }
 
-download_selected_llms() {
-  local id
-  if [[ ${#LLM_TARGETS[@]} -eq 0 ]]; then
-    echo "==> Skipping EstLLM download ($LLM_SELECTION_REASON)"
-    return
+require_tools() {
+  if ! have_cmd python3; then
+    echo "python3 is required for MLX conversion" >&2
+    exit 1
   fi
-  for id in "${LLM_TARGETS[@]}"; do
-    case "$id" in
-      8b)
-        echo "==> Llama-3.1-EstLLM-8B-Instruct-1125 Q4_K_M"
-        download "$LLM_8B_URL" "$MODELS_DIR/llm/$LLM_8B_FILE"
-        ;;
-      70b)
-        echo "==> Llama-3.1-EstLLM-70B-Instruct-0826 Q4_K_M (~43 GB)"
-        download "$LLM_70B_URL" "$MODELS_DIR/llm/$LLM_70B_FILE"
-        ;;
-    esac
-  done
+  if ! have_cmd curl; then
+    echo "curl is required" >&2
+    exit 1
+  fi
+  if ! have_cmd git; then
+    echo "git is required (Whisper MLX convert via mlx-examples)" >&2
+    exit 1
+  fi
+
+  if ! have_cmd omlx; then
+    echo "warning: omlx not on PATH — install with:" >&2
+    echo "  brew tap jundot/omlx https://github.com/jundot/omlx" >&2
+    echo "  brew install jundot/omlx/omlx" >&2
+  fi
+
+  echo "==> Ensuring Python packages: mlx-lm"
+  python3 -m pip install --upgrade 'mlx-lm' >/dev/null
+  export PATH="$(python3 -c 'import site; print(site.USER_BASE)')/bin:${PATH}"
+  if ! have_cmd mlx_lm.convert && ! python3 -c 'import mlx_lm' 2>/dev/null; then
+    echo "mlx-lm did not install correctly" >&2
+    exit 1
+  fi
 }
 
-# Abort if transfer stalls below 8 KiB/s for 45s; retry/resume on failure.
+mlx_lm_convert() {
+  if have_cmd mlx_lm.convert; then
+    mlx_lm.convert "$@"
+  else
+    python3 -m mlx_lm convert "$@"
+  fi
+}
+
+# Resume-friendly curl. Longer stall window for multi-GB shards.
 curl_download() {
   local url="$1"
   local partial="$2"
-  local -a auth=()
   if [[ -n "$HF_TOKEN" && "$url" == *huggingface.co* ]]; then
-    auth=(-H "Authorization: Bearer ${HF_TOKEN}")
+    curl -L --fail --progress-bar \
+      --connect-timeout 30 \
+      --retry 12 \
+      --retry-delay 5 \
+      --retry-all-errors \
+      --speed-limit 4096 \
+      --speed-time 120 \
+      -C - \
+      -H "Authorization: Bearer ${HF_TOKEN}" \
+      -o "$partial" \
+      "$url"
+  else
+    curl -L --fail --progress-bar \
+      --connect-timeout 30 \
+      --retry 12 \
+      --retry-delay 5 \
+      --retry-all-errors \
+      --speed-limit 4096 \
+      --speed-time 120 \
+      -C - \
+      -o "$partial" \
+      "$url"
   fi
-  curl -L --fail --progress-bar \
-    --connect-timeout 30 \
-    --retry 8 \
-    --retry-delay 3 \
-    --retry-all-errors \
-    --speed-limit 8192 \
-    --speed-time 45 \
-    -C - \
-    "${auth[@]}" \
-    -o "$partial" \
-    "$url"
 }
 
-download() {
+download_file() {
   local url="$1"
   local dest="$2"
-  local attempt rc
-  if [[ -f "$dest" && -s "$dest" ]]; then
-    echo "✓ exists: $dest"
-    return
-  fi
-  echo "↓ $url"
-  if have_cmd curl; then
-    for attempt in 1 2 3 4 5; do
-      if [[ -f "$dest.partial" ]]; then
-        echo "  attempt ${attempt}/5 — resuming $(du -h "$dest.partial" | awk '{print $1}') partial…"
-      else
-        echo "  attempt ${attempt}/5"
-      fi
-      rc=0
-      curl_download "$url" "$dest.partial" || rc=$?
-      if [[ $rc -eq 0 && -s "$dest.partial" ]]; then
-        mv "$dest.partial" "$dest"
-        echo "✓ saved: $dest"
+  local expected_size="${3:-}"
+
+  mkdir -p "$(dirname "$dest")"
+
+  if [[ -f "$dest" ]]; then
+    if [[ -n "$expected_size" && "$expected_size" =~ ^[0-9]+$ ]]; then
+      local have
+      have="$(wc -c <"$dest" | tr -d ' ')"
+      if [[ "$have" == "$expected_size" ]]; then
+        echo "    exists ($(bytes_human "$have")): ${dest#"$HF_CACHE/"}"
         return
       fi
-      # 22 = HTTP error from --fail (401/403/404). Don't spin on permanent auth failures.
-      if [[ $rc -eq 22 || $rc -eq 56 ]] && [[ "$url" == *huggingface.co*"${TTS_HF_REPO}"* ]]; then
-        echo "Neurokõne weights are gated (HTTP error ${rc})." >&2
-        echo "  • Request access: https://huggingface.co/${TTS_HF_REPO}" >&2
-        echo "  • Or skip TTS and use macOS speech: SKIP_TTS=1 ./Scripts/fetch-models.sh" >&2
-        return 22
-      fi
-      echo "  download stalled or failed (exit ${rc}) — retrying in 5s…"
-      sleep 5
-    done
-    echo "Download failed after retries: $url" >&2
-    exit 1
-  else
-    wget -c -O "$dest.partial" "$url"
-    mv "$dest.partial" "$dest"
-    echo "✓ saved: $dest"
+      echo "    size mismatch for ${dest#"$HF_CACHE/"} (have $have, want $expected_size) — re-downloading"
+      rm -f "$dest"
+    else
+      echo "    exists: ${dest#"$HF_CACHE/"}"
+      return
+    fi
   fi
+
+  local partial="${dest}.partial"
+  local label
+  label="${dest#"$HF_CACHE/"}"
+  if [[ -n "$expected_size" && "$expected_size" =~ ^[0-9]+$ ]]; then
+    echo "    downloading $label ($(bytes_human "$expected_size"))"
+  else
+    echo "    downloading $label"
+  fi
+  curl_download "$url" "$partial"
+
+  if [[ -n "$expected_size" && "$expected_size" =~ ^[0-9]+$ ]]; then
+    local got
+    got="$(wc -c <"$partial" | tr -d ' ')"
+    if [[ "$got" != "$expected_size" ]]; then
+      echo "Incomplete download for $label (got $got, expected $expected_size)" >&2
+      exit 1
+    fi
+  fi
+  mv "$partial" "$dest"
 }
 
-download_tts_models() {
-  local dest="$MODELS_DIR/tts/multispeaker"
-  local file url rc
-  TTS_READY=0
-
-  if [[ "${SKIP_TTS:-0}" == "1" ]]; then
-    echo "==> Skipping Neurokõne TTS (SKIP_TTS=1) — app will use macOS system speech"
-    return 0
+# List files in an HF repo (path\tsize per line). Uses recursive tree API.
+hf_list_files() {
+  local repo="$1"
+  local revision="${2:-main}"
+  local api="https://huggingface.co/api/models/${repo}/tree/${revision}?recursive=1"
+  local json
+  if [[ -n "$HF_TOKEN" ]]; then
+    json="$(curl -sL --fail --connect-timeout 30 -H "Authorization: Bearer ${HF_TOKEN}" "$api")"
+  else
+    json="$(curl -sL --fail --connect-timeout 30 "$api")"
   fi
+  python3 -c '
+import json, sys
+data = json.loads(sys.argv[1])
+for x in data:
+    if x.get("type") != "file":
+        continue
+    path = x.get("path") or ""
+    size = x.get("size")
+    if size is None:
+        size = ""
+    print(f"{path}\t{size}")
+' "$json"
+}
 
+# Download an HF repo into $HF_CACHE/<repo>, one file at a time.
+# Optional 3rd arg: python regex of paths to skip.
+# Progress goes to stderr; the only stdout line is the local dest path (for $(...)).
+hf_download_repo() {
+  local repo="$1"
+  local revision="${2:-main}"
+  local skip_re="${3:-}"
+  local dest="$HF_CACHE/$repo"
   mkdir -p "$dest"
-  if [[ -s "$dest/model_weights.hdf5" && -s "$dest/config.yaml" ]]; then
-    echo "✓ TTS models already present → $dest"
-    TTS_READY=1
-    return 0
+
+  echo "==> Listing $repo@$revision" >&2
+  local listing
+  listing="$(hf_list_files "$repo" "$revision")"
+  if [[ -z "$listing" ]]; then
+    echo "No files listed for $repo" >&2
+    exit 1
   fi
 
-  echo "==> Neurokõne multispeaker (${TTS_HF_REPO} @ ${TTS_HF_REVISION})"
-  if [[ -z "$HF_TOKEN" ]]; then
-    echo "  note: ${TTS_HF_REPO} is gated — needs approved HF access + HF_TOKEN"
+  local path size total=0 count=0 skipped=0
+  while IFS=$'\t' read -r path size; do
+    [[ -n "$path" ]] || continue
+    if [[ -n "$skip_re" ]] && python3 -c 'import re,sys; sys.exit(0 if re.search(sys.argv[1], sys.argv[2]) else 1)' "$skip_re" "$path"; then
+      echo "    skip: $path" >&2
+      skipped=$((skipped + 1))
+      continue
+    fi
+    count=$((count + 1))
+    if [[ "$size" =~ ^[0-9]+$ ]]; then
+      total=$((total + size))
+    fi
+  done <<<"$listing"
+  echo "    will download $count files (~$(bytes_human "$total")); skipped $skipped" >&2
+
+  local i=0
+  while IFS=$'\t' read -r path size; do
+    [[ -n "$path" ]] || continue
+    if [[ -n "$skip_re" ]] && python3 -c 'import re,sys; sys.exit(0 if re.search(sys.argv[1], sys.argv[2]) else 1)' "$skip_re" "$path"; then
+      continue
+    fi
+    i=$((i + 1))
+    echo "  [$i/$count] $path" >&2
+    # download_file echos progress to stdout — redirect that to stderr too.
+    download_file \
+      "https://huggingface.co/${repo}/resolve/${revision}/${path}" \
+      "$dest/$path" \
+      "$size" >&2
+  done <<<"$listing"
+
+  printf '%s\n' "$dest"
+}
+
+convert_estllm() {
+  local hf_repo="$1"
+  local out_dir="$2"
+  if model_dir_ready "$out_dir"; then
+    echo "    exists: $(basename "$out_dir")"
+    return
   fi
-  for file in "${TTS_FILES[@]}"; do
-    url="https://huggingface.co/${TTS_HF_REPO}/resolve/${TTS_HF_REVISION}/${file}"
-    rc=0
-    download "$url" "$dest/$file" || rc=$?
-    if [[ $rc -ne 0 ]]; then
-      echo "==> Continuing without Neurokõne (macOS system speech fallback)."
-      echo "    Re-run with approved access later, or SKIP_TTS=1 to silence this attempt."
-      return 0
+
+  local local_hf
+  local_hf="$(hf_download_repo "$hf_repo" main)"
+
+  local tmp="${out_dir}.converting.$$"
+  rm -rf "$tmp"
+  echo "    converting local $local_hf → $(basename "$out_dir") (4-bit MLX)"
+  if [[ -n "$HF_TOKEN" ]]; then
+    export HF_TOKEN HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+  fi
+  mlx_lm_convert \
+    --hf-path "$local_hf" \
+    --mlx-path "$tmp" \
+    -q --q-bits 4
+  rm -rf "$out_dir"
+  mv "$tmp" "$out_dir"
+}
+
+convert_selected_llms() {
+  if [[ -n "${EZEESTI_LLM_DIR:-}" && -d "${EZEESTI_LLM_DIR}" ]]; then
+    echo "==> Skipping EstLLM convert ($LLM_SELECTION_REASON)"
+    return
+  fi
+  if [[ ${#LLM_TARGETS[@]} -eq 0 ]]; then
+    echo "==> Skipping EstLLM convert ($LLM_SELECTION_REASON)"
+    return
+  fi
+  local id
+  for id in "${LLM_TARGETS[@]}"; do
+    case "$id" in
+      8b)
+        echo "==> EstLLM 8B → download then MLX 4-bit ($LLM_8B_DIR)"
+        convert_estllm "$LLM_8B_HF" "$MODELS_DIR/llm/$LLM_8B_DIR"
+        ;;
+      70b)
+        echo "==> EstLLM 70B → download then MLX 4-bit ($LLM_70B_DIR)"
+        echo "    note: HF safetensors are ~131 GiB before 4-bit quantize"
+        convert_estllm "$LLM_70B_HF" "$MODELS_DIR/llm/$LLM_70B_DIR"
+        ;;
+    esac
+  done
+}
+
+ensure_mlx_examples_whisper() {
+  local src="$CACHE_DIR/mlx-examples"
+  if [[ ! -d "$src/.git" ]]; then
+    echo "==> Cloning mlx-examples (Whisper convert script)"
+    rm -rf "$src"
+    git clone --depth 1 https://github.com/ml-explore/mlx-examples.git "$src"
+  fi
+  if [[ ! -f "$src/whisper/convert.py" ]]; then
+    echo "mlx-examples whisper/convert.py missing under $src" >&2
+    exit 1
+  fi
+  python3 -m pip install --upgrade 'mlx' 'numpy' 'scipy' 'torch' 'torchaudio' 'tqdm' 'more-itertools' 'tiktoken' 'numba' 'huggingface-hub<1.0' >/dev/null
+}
+
+convert_whisper() {
+  local out_dir="$MODELS_DIR/whisper/$WHISPER_DIR"
+  if model_dir_ready "$out_dir"; then
+    echo "==> Whisper MLX exists: $WHISPER_DIR"
+    return
+  fi
+
+  # Skip ggml/ct2/demo/native — convert only needs transformers weights + tokenizer.
+  local local_hf
+  local_hf="$(hf_download_repo "$WHISPER_HF" main '^(ggml/|ct2/|demo/|native/)')"
+  ensure_mlx_examples_whisper
+
+  local tmp="${out_dir}.converting.$$"
+  rm -rf "$tmp"
+  echo "==> Converting local Whisper → $WHISPER_DIR"
+  (
+    cd "$CACHE_DIR/mlx-examples/whisper"
+    python3 convert.py \
+      --torch-name-or-path "$local_hf" \
+      --mlx-path "$tmp"
+  )
+  rm -rf "$out_dir"
+  mkdir -p "$(dirname "$out_dir")"
+  mv "$tmp" "$out_dir"
+
+  # OMLX STT requires HF processor/tokenizer files that mlx-examples convert omits.
+  echo "    copying Whisper processor/tokenizer files for OMLX"
+  local f
+  for f in preprocessor_config.json tokenizer.json tokenizer_config.json \
+           special_tokens_map.json vocab.json merges.txt added_tokens.json \
+           normalizer.json generation_config.json; do
+    if [[ -f "$local_hf/$f" ]]; then
+      cp -f "$local_hf/$f" "$out_dir/$f"
     fi
   done
-  if [[ -s "$dest/model_weights.hdf5" && -s "$dest/config.yaml" ]]; then
-    TTS_READY=1
-    echo "✓ TTS models → $dest"
-  else
-    echo "==> Neurokõne weights incomplete — using macOS system speech fallback."
-  fi
 }
 
-fix_dylib_rpaths() {
-  local dir="$1"
-  local dylib
-  for dylib in "$dir"/*.dylib; do
-    [[ -f "$dylib" ]] || continue
-    [[ -L "$dylib" ]] && continue
-    local base dep
-    base="$(basename "$dylib")"
-    install_name_tool -id "@loader_path/$base" "$dylib" 2>/dev/null || true
-    while IFS= read -r dep; do
-      case "$dep" in
-        @rpath/*.dylib)
-          local depbase="${dep#@rpath/}"
-          if [[ -e "$dir/$depbase" ]]; then
-            install_name_tool -change "$dep" "@loader_path/$depbase" "$dylib" 2>/dev/null || true
-          fi
-          ;;
-      esac
-    done < <(otool -L "$dylib" | awk 'NR>1 {print $1}')
+download_tts_weights() {
+  if [[ "${SKIP_TTS:-0}" == "1" ]]; then
+    echo "==> Skipping Neurokõne weights (SKIP_TTS=1)"
+    return
+  fi
+  if [[ -z "$HF_TOKEN" ]]; then
+    echo "==> Skipping Neurokõne weights (set HF_TOKEN for gated tartuNLP/fastpitch-est, or SKIP_TTS=1)"
+    echo "    Hear target still works via macOS speech without Neurokõne."
+    return
+  fi
+  echo "==> Neurokõne FastPitch weights ($TTS_HF_REPO@$TTS_HF_REVISION)"
+  local f
+  for f in "${TTS_FILES[@]}"; do
+    download_file \
+      "https://huggingface.co/${TTS_HF_REPO}/resolve/${TTS_HF_REVISION}/${f}" \
+      "$MODELS_DIR/tts/$f"
   done
 }
 
-mirror_to_vendor() {
-  local name="$1"
-  local primary="$MODELS_DIR/native/$name/lib"
-  local vendor="$VENDOR_DIR/$name/lib"
-  rm -rf "$vendor"
-  mkdir -p "$vendor"
-  cp -a "$primary"/. "$vendor/"
+link_model_alias() {
+  local real="$1"
+  local name
+  name="$(basename "$real")"
+  local alias_path="$MODELS_DIR/$name"
+  [[ -d "$real" ]] || return 0
+  if [[ -L "$alias_path" || -e "$alias_path" ]]; then
+    return 0
+  fi
+  local parent
+  parent="$(basename "$(dirname "$real")")"
+  ln -s "${parent}/${name}" "$alias_path"
 }
 
-APPLE_FRAMEWORKS=(
-  -framework Foundation
-  -framework Metal
-  -framework MetalKit
-  -framework Accelerate
-  -framework CoreGraphics
-)
+copy_to_omlx() {
+  if [[ "$COPY_TO_OMLX" != "1" ]]; then
+    return
+  fi
+  mkdir -p "$OMLX_MODELS_DIR"
+  echo "==> Copying MLX models into $OMLX_MODELS_DIR"
+  local src name dest
+  for src in "$MODELS_DIR/llm"/* "$MODELS_DIR/whisper"/*; do
+    [[ -d "$src" ]] || continue
+    name="$(basename "$src")"
+    dest="$OMLX_MODELS_DIR/$name"
+    if model_dir_ready "$dest"; then
+      echo "    exists: $name"
+      continue
+    fi
+    echo "    copying $name (APFS clone when possible)"
+    rm -rf "$dest"
+    if cp -cR "$src" "$dest" 2>/dev/null; then
+      :
+    else
+      cp -R "$src" "$dest"
+    fi
+  done
+}
 
 resolve_llm_targets
+require_tools
 
 echo "==> Models directory: $MODELS_DIR"
-echo "==> Vendor directory: $VENDOR_DIR"
+echo "==> HF download cache: $HF_CACHE"
 echo "==> EstLLM selection: $LLM_SELECTION_REASON"
 
-echo "==> TalTech Whisper ggml (verbatim-2604)"
-download "$WHISPER_HF" "$MODELS_DIR/whisper/ggml-model.bin"
+convert_selected_llms
+convert_whisper
+download_tts_weights
 
-download_selected_llms
-
-download_tts_models
-
-build_whisper() {
-  local src="$CACHE_DIR/whisper.cpp"
-  if [[ ! -d "$src/.git" ]]; then
-    git clone --depth 1 --branch "$WHISPER_TAG" "$WHISPER_REPO" "$src" || git clone --depth 1 "$WHISPER_REPO" "$src"
-  elif [[ "$(git -C "$src" describe --tags 2>/dev/null)" != "$WHISPER_TAG" ]]; then
-    # Cached checkout is on an older tag; move it forward instead of silently reusing it.
-    echo "==> Updating cached whisper.cpp to $WHISPER_TAG"
-    git -C "$src" fetch --depth 1 origin tag "$WHISPER_TAG" --no-tags
-    git -C "$src" checkout -q "$WHISPER_TAG"
-    rm -rf "$src/build"
-  fi
-  cmake -S "$src" -B "$src/build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=ON \
-    -DGGML_METAL=ON \
-    -DGGML_METAL_EMBED_LIBRARY=ON \
-    -DWHISPER_BUILD_TESTS=OFF \
-    -DWHISPER_BUILD_SERVER=OFF
-  cmake --build "$src/build" -j "$(sysctl -n hw.ncpu)"
-
-  local bin_dir="$src/build/bin"
-  local primary="$MODELS_DIR/native/whisper/lib"
-  mkdir -p "$primary"
-  find "$bin_dir" -maxdepth 1 \( -type f -o -type l \) \( -name 'libggml*.dylib' -o -name 'libwhisper*.dylib' \) -exec cp -a {} "$primary/" \;
-
-  if [[ ! -f "$primary/libwhisper.dylib" ]]; then
-    echo "libwhisper.dylib missing after copy" >&2
-    exit 1
-  fi
-
-  echo "==> Linking libEzeestiWhisper.dylib"
-  clang -dynamiclib \
-    -o "$primary/libEzeestiWhisper.dylib" \
-    "$ROOT/Native/ezeesti_whisper.c" \
-    -I"$ROOT/Native/include" \
-    -I"$src/include" \
-    -I"$src/ggml/include" \
-    -L"$primary" \
-    -lwhisper \
-    "${APPLE_FRAMEWORKS[@]}" \
-    -lc++ \
-    -install_name "@loader_path/libEzeestiWhisper.dylib" \
-    -Wl,-rpath,@loader_path
-
-  fix_dylib_rpaths "$primary"
-  mirror_to_vendor whisper
-  echo "✓ whisper native → $primary"
-
-  if [[ -f "$bin_dir/whisper-cli" ]]; then
-    cp "$bin_dir/whisper-cli" "$MODELS_DIR/bin/whisper-cli"
-    chmod +x "$MODELS_DIR/bin/whisper-cli"
-  fi
-}
-
-build_llama() {
-  local src="$CACHE_DIR/llama.cpp"
-  if [[ ! -d "$src/.git" ]]; then
-    git clone --depth 1 "$LLAMA_REPO" "$src"
-  fi
-  cmake -S "$src" -B "$src/build" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=ON \
-    -DGGML_METAL=ON \
-    -DGGML_METAL_EMBED_LIBRARY=ON \
-    -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_SERVER=OFF \
-    -DLLAMA_BUILD_EXAMPLES=OFF
-  cmake --build "$src/build" -j "$(sysctl -n hw.ncpu)" --target llama
-
-  local bin_dir="$src/build/bin"
-  local primary="$MODELS_DIR/native/llama/lib"
-  mkdir -p "$primary"
-  find "$bin_dir" -maxdepth 1 \( -type f -o -type l \) \( -name 'libggml*.dylib' -o -name 'libllama*.dylib' \) -exec cp -a {} "$primary/" \;
-  # Drop server/cli helper dylibs if present — not needed for inference.
-  rm -f "$primary"/libllama-server*.dylib "$primary"/libllama-cli*.dylib "$primary"/libllama-common*.dylib "$primary"/libmtmd*.dylib
-
-  if [[ ! -f "$primary/libllama.dylib" ]]; then
-    echo "libllama.dylib missing after copy" >&2
-    exit 1
-  fi
-
-  echo "==> Linking libEzeestiLlama.dylib"
-  clang -dynamiclib \
-    -o "$primary/libEzeestiLlama.dylib" \
-    "$ROOT/Native/ezeesti_llama.c" \
-    -I"$ROOT/Native/include" \
-    -I"$src/include" \
-    -I"$src/ggml/include" \
-    -L"$primary" \
-    -lllama \
-    "${APPLE_FRAMEWORKS[@]}" \
-    -lc++ \
-    -install_name "@loader_path/libEzeestiLlama.dylib" \
-    -Wl,-rpath,@loader_path
-
-  fix_dylib_rpaths "$primary"
-  mirror_to_vendor llama
-  echo "✓ llama native → $primary"
-
-  if [[ -f "$bin_dir/llama-cli" ]]; then
-    cp "$bin_dir/llama-cli" "$MODELS_DIR/bin/llama-cli"
-    chmod +x "$MODELS_DIR/bin/llama-cli"
-  fi
-}
-
-if [[ "${SKIP_BUILD_BINARIES:-0}" != "1" ]]; then
-  if ! have_cmd cmake; then
-    echo "cmake not found. Install with: brew install cmake" >&2
-    exit 1
-  fi
-  echo "==> Building whisper.cpp (Metal shared + umbrella)"
-  build_whisper
-  echo "==> Building llama.cpp (Metal shared + umbrella)"
-  build_llama
-else
-  echo "==> Skipping binary builds (SKIP_BUILD_BINARIES=1)"
-fi
-
-required_files=(
-  "$MODELS_DIR/whisper/ggml-model.bin"
-)
-required_files+=("${LLM_REQUIRED[@]}")
-if [[ "${TTS_READY:-0}" == "1" ]]; then
-  required_files+=(
-    "$MODELS_DIR/tts/multispeaker/config.yaml"
-    "$MODELS_DIR/tts/multispeaker/model_weights.hdf5"
-  )
-fi
-if [[ "${SKIP_BUILD_BINARIES:-0}" != "1" ]]; then
-  required_files+=(
-    "$MODELS_DIR/native/whisper/lib/libEzeestiWhisper.dylib"
-    "$MODELS_DIR/native/llama/lib/libEzeestiLlama.dylib"
-  )
-fi
-for required in "${required_files[@]}"; do
-  if [[ ! -s "$required" ]]; then
-    echo "Setup failed: required file missing or empty: $required" >&2
-    exit 1
-  fi
+for d in "$MODELS_DIR/llm"/* "$MODELS_DIR/whisper"/*; do
+  [[ -d "$d" ]] || continue
+  link_model_alias "$d"
 done
 
+copy_to_omlx
+
 echo
-echo "Done. Model root: $MODELS_DIR"
-echo "EstLLM: $LLM_SELECTION_REASON"
-if [[ "${TTS_READY:-0}" == "1" ]]; then
-  echo "TTS: Neurokõne weights ready (run ./Scripts/setup-neurokone.sh)"
-else
-  echo "TTS: skipped — app falls back to macOS system speech"
+echo "==> Done."
+echo "Serve with OMLX:"
+echo "  omlx serve"
+echo "  # or: omlx serve --model-dir \"$MODELS_DIR\""
+echo
+echo "Confirm model IDs:"
+echo "  curl -s http://127.0.0.1:8000/v1/models | python3 -m json.tool"
+echo
+echo "Default MLX directory names:"
+echo "  LLM:  $MODELS_DIR/llm/{${LLM_8B_DIR}|${LLM_70B_DIR}}"
+echo "  STT:  $MODELS_DIR/whisper/$WHISPER_DIR"
+if [[ "$COPY_TO_OMLX" == "1" ]]; then
+  echo "  OMLX: $OMLX_MODELS_DIR/"
 fi
-echo "In-process libs: $MODELS_DIR/native/{whisper,llama}/lib/libEzeesti*.dylib"
-echo "Open Ezeesti.xcodeproj and run the macOS app."

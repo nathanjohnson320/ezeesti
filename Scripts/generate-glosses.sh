@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-generate English glosses with local EstLLM (one model load) and merge into the bundle.
+# Pre-generate English glosses via OMLX EstLLM chat completions and merge into the bundle.
 #
 # Usage:
 #   ./Scripts/generate-glosses.sh                 # A1–B2 + graded-text surfaces
@@ -7,20 +7,19 @@
 #   ./Scripts/generate-glosses.sh --batch 25       # words per EstLLM call (default 20)
 #   ./Scripts/generate-glosses.sh --cefr A1,A2     # subset of bands
 #
-# Requires Models from ./Scripts/fetch-models.sh (libEzeestiLlama + EstLLM GGUF).
+# Requires: OMLX serving EstLLM (see Scripts/fetch-models.sh), then:
+#   omlx serve --model-dir "$HOME/Library/Application Support/Ezeesti/Models"
 # Resumes: skips lemmas already in word-glosses.json.
 # Progress: prints live ETA + writes .cache/gloss-gen/progress.log
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS="${EZEESTI_MODELS:-$HOME/Library/Application Support/Ezeesti/Models}"
-LIB_DIR="$MODELS/native/llama/lib"
-DYLIB="$LIB_DIR/libEzeestiLlama.dylib"
 LLM_DIR="$MODELS/llm"
-# Priority order matches Sources/EzeestiCore/Models.swift (70B then 8B).
-LLM_70B_FILE="Llama-3.1-EstLLM-70B-Instruct-0826.Q4_K_M.gguf"
-LLM_8B_FILE="Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf"
+LLM_70B_DIR="Llama-3.1-EstLLM-70B-Instruct-0826-4bit"
+LLM_8B_DIR="Llama-3.1-EstLLM-8B-Instruct-1125-4bit"
 LLM_70B_MIN_GIB=48
+OMLX_BASE="${EZEESTI_OMLX_BASE_URL:-http://127.0.0.1:8000/v1}"
 LEXICON="$ROOT/Sources/EzeestiCore/Resources/Lexicon/estonian-top10k.json"
 OUT="$ROOT/Sources/EzeestiCore/Resources/Lexicon/word-glosses.json"
 TEXTS_DIR="$ROOT/Sources/EzeestiCore/Resources/Texts"
@@ -35,25 +34,29 @@ physical_ram_gib() {
   echo $(( bytes / 1024 / 1024 / 1024 ))
 }
 
-# Mirror ModelPaths.resolveEstLLMGGUF: override → best fit for RAM → largest installed.
-resolve_gguf() {
-  if [[ -n "${EZEESTI_LLM_GGUF:-}" && -f "${EZEESTI_LLM_GGUF}" ]]; then
-    echo "${EZEESTI_LLM_GGUF}"
+# Mirror ModelPaths.resolveEstLLMDirectory: override → best fit for RAM → largest installed.
+resolve_llm_model_id() {
+  if [[ -n "${EZEESTI_OMLX_LLM_MODEL:-}" ]]; then
+    echo "${EZEESTI_OMLX_LLM_MODEL}"
+    return
+  fi
+  if [[ -n "${EZEESTI_LLM_DIR:-}" && -d "${EZEESTI_LLM_DIR}" ]]; then
+    basename "${EZEESTI_LLM_DIR}"
     return
   fi
   local gib
   gib="$(physical_ram_gib)"
   local best_fit="" best_any=""
-  if [[ -f "$LLM_DIR/$LLM_70B_FILE" ]]; then
-    best_any="$LLM_DIR/$LLM_70B_FILE"
+  if [[ -d "$LLM_DIR/$LLM_70B_DIR" ]]; then
+    best_any="$LLM_70B_DIR"
     if [[ "$gib" -ge "$LLM_70B_MIN_GIB" ]]; then
-      best_fit="$LLM_DIR/$LLM_70B_FILE"
+      best_fit="$LLM_70B_DIR"
     fi
   fi
-  if [[ -f "$LLM_DIR/$LLM_8B_FILE" ]]; then
-    [[ -n "$best_any" ]] || best_any="$LLM_DIR/$LLM_8B_FILE"
+  if [[ -d "$LLM_DIR/$LLM_8B_DIR" ]]; then
+    [[ -n "$best_any" ]] || best_any="$LLM_8B_DIR"
     if [[ -z "$best_fit" ]]; then
-      best_fit="$LLM_DIR/$LLM_8B_FILE"
+      best_fit="$LLM_8B_DIR"
     fi
   fi
   echo "${best_fit:-$best_any}"
@@ -69,37 +72,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-GGUF="$(resolve_gguf)"
+LLM_MODEL="$(resolve_llm_model_id)"
 
-if [[ ! -f "$DYLIB" ]]; then
-  echo "Missing $DYLIB — run ./Scripts/fetch-models.sh" >&2
+if [[ -z "$LLM_MODEL" ]]; then
+  echo "Missing EstLLM MLX under $LLM_DIR — run ./Scripts/fetch-models.sh" >&2
   exit 1
 fi
-if [[ -z "$GGUF" || ! -f "$GGUF" ]]; then
-  echo "Missing EstLLM GGUF under $LLM_DIR — run ./Scripts/fetch-models.sh" >&2
-  exit 1
-fi
-echo "Using EstLLM GGUF: $GGUF"
 if [[ ! -f "$LEXICON" ]]; then
   echo "Missing lexicon $LEXICON — run ./Scripts/fetch-lexicon.sh" >&2
   exit 1
 fi
 
+echo "Using OMLX model id: $LLM_MODEL @ $OMLX_BASE"
+if ! curl -sf "${OMLX_BASE}/models" >/dev/null; then
+  echo "OMLX not reachable at ${OMLX_BASE} — start with:" >&2
+  echo "  omlx serve --model-dir \"$MODELS\"" >&2
+  exit 1
+fi
+
 mkdir -p "$CACHE"
 
-export ROOT LEXICON OUT TEXTS_DIR CACHE CEFR_FILTER LIMIT BATCH LIB_DIR DYLIB GGUF
-
-# Ensure ggml/llama dylibs resolve when ctypes loads the umbrella.
-export DYLD_LIBRARY_PATH="$LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-export DYLD_FALLBACK_LIBRARY_PATH="$LIB_DIR${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+export ROOT LEXICON OUT TEXTS_DIR CACHE CEFR_FILTER LIMIT BATCH OMLX_BASE LLM_MODEL
 
 python3 << 'PY'
-import ctypes
 import json
 import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 lexicon = json.loads(Path(os.environ["LEXICON"]).read_text(encoding="utf-8"))
@@ -110,9 +112,9 @@ log_path = cache / "progress.log"
 cefr_allow = {x.strip().upper() for x in os.environ["CEFR_FILTER"].split(",") if x.strip()}
 limit = int(os.environ["LIMIT"])
 batch_size = max(1, int(os.environ["BATCH"]))
-lib_dir = Path(os.environ["LIB_DIR"])
-dylib = Path(os.environ["DYLIB"])
-gguf = Path(os.environ["GGUF"])
+omlx_base = os.environ["OMLX_BASE"].rstrip("/")
+llm_model = os.environ["LLM_MODEL"]
+api_key = os.environ.get("EZEESTI_OMLX_API_KEY") or os.environ.get("OMLX_API_KEY") or ""
 
 existing = {}
 if out_path.exists():
@@ -173,7 +175,7 @@ def chunks(items, n):
         yield items[i : i + n]
 
 
-def build_prompt(batch) -> str:
+def build_user(batch) -> str:
     lines = ["Gloss these Estonian words:", ""]
     for i, item in enumerate(batch, 1):
         meta = []
@@ -185,19 +187,13 @@ def build_prompt(batch) -> str:
         lines.append(f"{i}. {item['lemma']}{suffix}")
     lines.append("")
     lines.append('Reply with JSON only, like {"lemma":"english gloss", ...}')
-    user = "\n".join(lines)
-    return (
-        "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-        f"{SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
-        f"{user}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-    )
+    return "\n".join(lines)
 
 
 def extract_json_object(text: str) -> dict | None:
     text = text.strip()
     if text.startswith("```"):
         text = text.replace("```json", "").replace("```", "").strip()
-    # Prefer last balanced {...} in case of preamble.
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end <= start:
@@ -209,7 +205,6 @@ def extract_json_object(text: str) -> dict | None:
             return data
     except json.JSONDecodeError:
         pass
-    # Tolerate single quotes / trailing commas lightly via regex pairs.
     pairs = re.findall(r"\"([^\"]+)\"\s*:\s*\"([^\"]*)\"", blob)
     if pairs:
         return {k: v for k, v in pairs}
@@ -217,73 +212,47 @@ def extract_json_object(text: str) -> dict | None:
 
 
 class EstLLM:
-    """Load EstLLM once via libEzeestiLlama; keep weights resident across batches."""
+    """Chat completions against a required local OMLX server."""
 
-    def __init__(self, dylib_path: Path, lib_dir: Path, model_path: Path):
-        # Preload deps so dlopen of the umbrella resolves ggml/llama.
-        self._deps = []
-        for name in sorted(lib_dir.glob("libggml*.dylib")) + sorted(lib_dir.glob("libllama*.dylib")):
-            if "Ezeesti" in name.name:
-                continue
-            try:
-                self._deps.append(ctypes.CDLL(str(name), mode=ctypes.RTLD_GLOBAL))
-            except OSError:
-                pass
-        self.lib = ctypes.CDLL(str(dylib_path))
-        self.lib.ezeesti_llama_load.argtypes = [
-            ctypes.c_char_p,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-        ]
-        self.lib.ezeesti_llama_load.restype = ctypes.c_int
-        self.lib.ezeesti_llama_unload.argtypes = []
-        self.lib.ezeesti_llama_unload.restype = None
-        self.lib.ezeesti_llama_complete.argtypes = [
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_float,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-        ]
-        self.lib.ezeesti_llama_complete.restype = ctypes.c_int
-        self.model_path = model_path
-        self.lib_dir = lib_dir
+    def __init__(self, base: str, model: str, api_key: str = ""):
+        self.base = base.rstrip("/")
+        self.model = model
+        self.api_key = api_key
 
-    def load(self) -> None:
-        err = ctypes.create_string_buffer(1024)
-        rc = self.lib.ezeesti_llama_load(
-            str(self.lib_dir).encode(),
-            str(self.model_path).encode(),
-            2048,
-            err,
-            1024,
+    def complete(self, user: str, max_tokens: int = 768, temperature: float = 0.2) -> str:
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": int(max_tokens),
+            "temperature": float(temperature),
+            "stream": False,
+        }
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"{self.base}/chat/completions",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
         )
-        if rc != 0:
-            raise RuntimeError(err.value.decode(errors="replace") or "load failed")
+        if self.api_key:
+            req.add_header("Authorization", f"Bearer {self.api_key}")
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                payload = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")
+            raise RuntimeError(f"OMLX HTTP {e.code}: {detail[:500]}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"OMLX unreachable: {e}") from e
 
-    def complete(self, prompt: str, n_predict: int = 768, temperature: float = 0.2) -> str:
-        err = ctypes.create_string_buffer(1024)
-        out = ctypes.create_string_buffer(65536)
-        rc = self.lib.ezeesti_llama_complete(
-            prompt.encode(),
-            int(n_predict),
-            float(temperature),
-            out,
-            65536,
-            err,
-            1024,
-        )
-        if rc != 0:
-            raise RuntimeError(err.value.decode(errors="replace") or "complete failed")
-        raw = out.value.decode(errors="replace")
-        return raw.split("<|eot_id|>")[0].strip()
-
-    def unload(self) -> None:
-        self.lib.ezeesti_llama_unload()
+        choices = payload.get("choices") or []
+        if not choices:
+            raise RuntimeError("OMLX returned no choices")
+        content = (choices[0].get("message") or {}).get("content") or ""
+        return content.strip()
 
 
 targets = collect_targets()
@@ -296,7 +265,7 @@ log(
     f"Plan: {len(targets)} words in {len(batches)} batches "
     f"(batch={batch_size}, existing={len(existing)}, cefr={sorted(cefr_allow)})"
 )
-log(f"Model: {gguf.name}")
+log(f"Model: {llm_model} @ {omlx_base}")
 log(f"Output: {out_path}")
 log(f"Progress log: {log_path}")
 
@@ -304,11 +273,11 @@ if not targets:
     log("Nothing to do — catalog already covers the filter.")
     sys.exit(0)
 
-llm = EstLLM(dylib, lib_dir, gguf)
-log("Loading EstLLM into Metal once (this can take 30–90s)…")
+llm = EstLLM(omlx_base, llm_model, api_key)
+log("Checking OMLX…")
 t0 = time.time()
-llm.load()
-log(f"Model ready in {time.time() - t0:.1f}s — keeping it loaded for all batches")
+_ = llm.complete('Reply with JSON only: {"ping":"pong"}', max_tokens=32)
+log(f"OMLX ready in {time.time() - t0:.1f}s")
 
 updated = dict(existing)
 failures = 0
@@ -316,89 +285,78 @@ ok_words = 0
 batch_times: list[float] = []
 run_start = time.time()
 
-try:
-    for bi, batch in enumerate(batches, 1):
-        labels = ", ".join(x["surface"] for x in batch[:5])
-        if len(batch) > 5:
-            labels += f", … (+{len(batch) - 5})"
-        log(f"Batch {bi}/{len(batches)} — {len(batch)} words: {labels}")
+for bi, batch in enumerate(batches, 1):
+    labels = ", ".join(x["surface"] for x in batch[:5])
+    if len(batch) > 5:
+        labels += f", … (+{len(batch) - 5})"
+    log(f"Batch {bi}/{len(batches)} — {len(batch)} words: {labels}")
 
-        # ETA from completed batches.
-        if batch_times:
-            avg = sum(batch_times) / len(batch_times)
-            remaining = avg * (len(batches) - bi + 1)
-            log(f"  ETA ~{remaining / 60:.1f} min ({avg:.1f}s/batch avg)")
+    if batch_times:
+        avg = sum(batch_times) / len(batch_times)
+        remaining = avg * (len(batches) - bi + 1)
+        log(f"  ETA ~{remaining / 60:.1f} min ({avg:.1f}s/batch avg)")
 
-        prompt = build_prompt(batch)
-        # ~25 tokens per gloss JSON entry; pad for safety.
-        n_predict = min(2048, max(256, 40 * len(batch)))
-        t_batch = time.time()
-        try:
-            raw = llm.complete(prompt, n_predict=n_predict)
-        except Exception as e:
-            failures += len(batch)
-            fail_path = cache / f"fail-batch-{bi}.txt"
-            fail_path.write_text(str(e), encoding="utf-8")
-            log(f"  ! batch failed: {e} (see {fail_path})")
+    user = build_user(batch)
+    n_predict = min(2048, max(256, 40 * len(batch)))
+    t_batch = time.time()
+    try:
+        raw = llm.complete(user, max_tokens=n_predict)
+    except Exception as e:
+        failures += len(batch)
+        fail_path = cache / f"fail-batch-{bi}.txt"
+        fail_path.write_text(str(e), encoding="utf-8")
+        log(f"  ! batch failed: {e} (see {fail_path})")
+        continue
+
+    elapsed = time.time() - t_batch
+    batch_times.append(elapsed)
+    parsed = extract_json_object(raw) or {}
+    parsed_norm = {normalize(k): str(v).strip() for k, v in parsed.items() if str(v).strip()}
+
+    got = 0
+    missing = []
+    for item in batch:
+        lemma = item["lemma"]
+        gloss = parsed_norm.get(lemma) or parsed_norm.get(normalize(item["surface"]))
+        if not gloss:
+            missing.append(lemma)
             continue
+        updated[lemma] = gloss
+        got += 1
+        ok_words += 1
 
-        elapsed = time.time() - t_batch
-        batch_times.append(elapsed)
-        parsed = extract_json_object(raw) or {}
-        # Normalize keys from model.
-        parsed_norm = {normalize(k): str(v).strip() for k, v in parsed.items() if str(v).strip()}
+    if missing:
+        failures += len(missing)
+        log(f"  retrying {len(missing)} misses individually…")
+        for lemma in missing:
+            item = next(x for x in batch if x["lemma"] == lemma)
+            try:
+                raw1 = llm.complete(build_user([item]), max_tokens=96)
+                one = extract_json_object(raw1) or {}
+                one_norm = {normalize(k): str(v).strip() for k, v in one.items() if str(v).strip()}
+                gloss = one_norm.get(lemma) or next(iter(one_norm.values()), None)
+                if gloss:
+                    updated[lemma] = gloss
+                    got += 1
+                    ok_words += 1
+                    failures -= 1
+                    log(f"    ✓ {lemma} → {gloss}")
+                else:
+                    (cache / f"fail-{lemma}.txt").write_text(raw1[-2000:], encoding="utf-8")
+                    log(f"    ✗ {lemma}")
+            except Exception as e:
+                log(f"    ✗ {lemma}: {e}")
 
-        got = 0
-        missing = []
-        for item in batch:
-            lemma = item["lemma"]
-            gloss = parsed_norm.get(lemma) or parsed_norm.get(normalize(item["surface"]))
-            if not gloss:
-                missing.append(lemma)
-                continue
-            updated[lemma] = gloss
-            got += 1
-            ok_words += 1
+    log(
+        f"  → {got}/{len(batch)} glosses in {elapsed:.1f}s "
+        f"(catalog={len(updated)}, ok={ok_words}, fail={failures})"
+    )
 
-        if missing:
-            failures += len(missing)
-            # One-at-a-time retry for misses while model is still loaded.
-            log(f"  retrying {len(missing)} misses individually…")
-            for lemma in missing:
-                item = next(x for x in batch if x["lemma"] == lemma)
-                single_prompt = build_prompt([item])
-                try:
-                    raw1 = llm.complete(single_prompt, n_predict=96)
-                    one = extract_json_object(raw1) or {}
-                    one_norm = {normalize(k): str(v).strip() for k, v in one.items() if str(v).strip()}
-                    gloss = one_norm.get(lemma) or next(iter(one_norm.values()), None)
-                    if gloss:
-                        updated[lemma] = gloss
-                        got += 1
-                        ok_words += 1
-                        failures -= 1
-                        log(f"    ✓ {lemma} → {gloss}")
-                    else:
-                        (cache / f"fail-{lemma}.txt").write_text(raw1[-2000:], encoding="utf-8")
-                        log(f"    ✗ {lemma}")
-                except Exception as e:
-                    log(f"    ✗ {lemma}: {e}")
-
-        log(
-            f"  → {got}/{len(batch)} glosses in {elapsed:.1f}s "
-            f"(catalog={len(updated)}, ok={ok_words}, fail={failures})"
-        )
-
-        # Checkpoint after every batch so Ctrl-C is safe.
-        out_path.write_text(
-            json.dumps(dict(sorted(updated.items())), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        # Also dump raw response for debugging odd batches.
-        (cache / f"raw-batch-{bi}.txt").write_text(raw[-8000:], encoding="utf-8")
-finally:
-    log("Unloading EstLLM…")
-    llm.unload()
+    out_path.write_text(
+        json.dumps(dict(sorted(updated.items())), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (cache / f"raw-batch-{bi}.txt").write_text(raw[-8000:], encoding="utf-8")
 
 total = time.time() - run_start
 log(

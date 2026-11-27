@@ -19,7 +19,7 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>15.0</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Ezeesti needs the microphone so you can practice speaking Estonian.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

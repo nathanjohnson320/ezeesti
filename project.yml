@@ -2,13 +2,13 @@ name: Ezeesti
 options:
   bundleIdPrefix: ee.ezeesti
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "15.0"
   createIntermediateGroups: true
   xcodeVersion: "16.0"
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
 packages:
   Ezeesti:
     path: .

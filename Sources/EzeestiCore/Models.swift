@@ -91,34 +91,48 @@ public func ezeestiPhysicalMemoryBytes() -> UInt64 {
     return result == 0 ? size : 0
 }
 
-/// Known EstLLM GGUF variants, ordered by quality (higher priority wins when RAM allows).
+/// Known EstLLM MLX variants, ordered by quality (higher priority wins when RAM allows).
+///
+/// `directoryName` is both the on-disk folder under `Models/llm/` and the default OMLX model id.
 public struct EstLLMVariant: Sendable, Hashable, Identifiable {
     public let id: String
-    public let filename: String
+    /// Hugging Face source repo used by `Scripts/fetch-models.sh`.
+    public let hfRepo: String
+    /// Directory name under Application Support / OMLX model id after MLX conversion.
+    public let directoryName: String
     /// Minimum physical RAM recommended before selecting this variant automatically.
     public let minMemoryBytes: UInt64
     /// Higher = preferred when installed and memory allows.
     public let priority: Int
 
-    public init(id: String, filename: String, minMemoryBytes: UInt64, priority: Int) {
+    public init(
+        id: String,
+        hfRepo: String,
+        directoryName: String,
+        minMemoryBytes: UInt64,
+        priority: Int
+    ) {
         self.id = id
-        self.filename = filename
+        self.hfRepo = hfRepo
+        self.directoryName = directoryName
         self.minMemoryBytes = minMemoryBytes
         self.priority = priority
     }
 
-    /// 70B instruct Q4_K_M — best tutoring quality; needs ~48 GiB unified memory.
+    /// 70B instruct 4-bit MLX — best tutoring quality; needs ~48 GiB unified memory.
     public static let seventyB = EstLLMVariant(
         id: "70b",
-        filename: "Llama-3.1-EstLLM-70B-Instruct-0826.Q4_K_M.gguf",
+        hfRepo: "tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826",
+        directoryName: "Llama-3.1-EstLLM-70B-Instruct-0826-4bit",
         minMemoryBytes: 48 * 1024 * 1024 * 1024,
         priority: 200
     )
 
-    /// 8B instruct Q4_K_M — default for smaller Apple Silicon Macs.
+    /// 8B instruct 4-bit MLX — default for smaller Apple Silicon Macs.
     public static let eightB = EstLLMVariant(
         id: "8b",
-        filename: "Llama-3.1-EstLLM-8B-Instruct-1125.Q4_K_M.gguf",
+        hfRepo: "tartuNLP/Llama-3.1-EstLLM-8B-Instruct-1125",
+        directoryName: "Llama-3.1-EstLLM-8B-Instruct-1125-4bit",
         minMemoryBytes: 8 * 1024 * 1024 * 1024,
         priority: 100
     )
@@ -134,44 +148,46 @@ public struct EstLLMVariant: Sendable, Hashable, Identifiable {
     }
 }
 
-/// Locations of on-disk Whisper / EstLLM / Neurokõne artifacts under Application Support.
+/// Locations of on-disk MLX model dirs / Neurokõne under Application Support.
 /// Prefer the `defaultApplicationSupport()` factory (creates the Models root) over manual path plumbing.
+///
+/// Pass the Models root to `omlx serve --model-dir`.
 public struct ModelPaths: Sendable {
-    public let whisperGGML: URL?
-    public let estLLMGGUF: URL?
-    /// Directory containing `libEzeestiWhisper.dylib` (+ whisper/ggml deps).
-    public let whisperLibDir: URL?
-    /// Directory containing `libEzeestiLlama.dylib` (+ llama/ggml deps).
-    public let llamaLibDir: URL?
+    /// Root directory passed to `omlx serve --model-dir`.
+    public let modelsRoot: URL
+    /// Converted TalTech Whisper MLX directory (served by OMLX STT).
+    public let whisperDirectory: URL?
+    /// Converted EstLLM MLX directory (served by OMLX chat).
+    public let estLLMDirectory: URL?
     public let neurokoneBinary: URL?
 
+    public static let defaultWhisperDirectoryName = "whisper-large-v3-turbo-et-verbatim-2604-mlx"
+
     public init(
-        whisperGGML: URL? = nil,
-        estLLMGGUF: URL? = nil,
-        whisperLibDir: URL? = nil,
-        llamaLibDir: URL? = nil,
+        modelsRoot: URL,
+        whisperDirectory: URL? = nil,
+        estLLMDirectory: URL? = nil,
         neurokoneBinary: URL? = nil
     ) {
-        self.whisperGGML = whisperGGML
-        self.estLLMGGUF = estLLMGGUF
-        self.whisperLibDir = whisperLibDir
-        self.llamaLibDir = llamaLibDir
+        self.modelsRoot = modelsRoot
+        self.whisperDirectory = whisperDirectory
+        self.estLLMDirectory = estLLMDirectory
         self.neurokoneBinary = neurokoneBinary
     }
 
-    public var whisperNativeReady: Bool {
-        guard let model = whisperGGML, let lib = whisperLibDir else { return false }
-        let dylib = lib.appendingPathComponent("libEzeestiWhisper.dylib")
-        return Self.isReachable(model) && Self.isReachable(dylib)
+    /// True when the Whisper MLX conversion directory exists and looks non-empty.
+    public var whisperReady: Bool {
+        guard let dir = whisperDirectory else { return false }
+        return Self.isModelDirectoryReady(dir)
     }
 
-    public var llamaNativeReady: Bool {
-        guard let model = estLLMGGUF, let lib = llamaLibDir else { return false }
-        let dylib = lib.appendingPathComponent("libEzeestiLlama.dylib")
-        return Self.isReachable(model) && Self.isReachable(dylib)
+    /// True when the EstLLM MLX conversion directory exists and looks non-empty.
+    public var llmReady: Bool {
+        guard let dir = estLLMDirectory else { return false }
+        return Self.isModelDirectoryReady(dir)
     }
 
-    /// Creates `Application Support/Ezeesti/Models` if needed and returns the conventional artifact paths.
+    /// Creates `Application Support/Ezeesti/Models` if needed and returns conventional MLX paths.
     public static func defaultApplicationSupport() throws -> ModelPaths {
         let root = try FileManager.default.url(
             for: .applicationSupportDirectory,
@@ -181,38 +197,41 @@ public struct ModelPaths: Sendable {
         ).appendingPathComponent("Ezeesti/Models", isDirectory: true)
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let llmDir = root.appendingPathComponent("llm", isDirectory: true)
-        try FileManager.default.createDirectory(at: llmDir, withIntermediateDirectories: true)
+        let llmParent = root.appendingPathComponent("llm", isDirectory: true)
+        try FileManager.default.createDirectory(at: llmParent, withIntermediateDirectories: true)
+        let whisperParent = root.appendingPathComponent("whisper", isDirectory: true)
+        try FileManager.default.createDirectory(at: whisperParent, withIntermediateDirectories: true)
 
-        let estLLM = resolveEstLLMGGUF(in: llmDir)
-            ?? llmDir.appendingPathComponent(EstLLMVariant.recommended().filename)
+        let estLLM = resolveEstLLMDirectory(in: llmParent)
+            ?? llmParent.appendingPathComponent(EstLLMVariant.recommended().directoryName, isDirectory: true)
+
+        let whisper = whisperParent.appendingPathComponent(defaultWhisperDirectoryName, isDirectory: true)
 
         return ModelPaths(
-            whisperGGML: root.appendingPathComponent("whisper/ggml-model.bin"),
-            estLLMGGUF: estLLM,
-            whisperLibDir: root.appendingPathComponent("native/whisper/lib", isDirectory: true),
-            llamaLibDir: root.appendingPathComponent("native/llama/lib", isDirectory: true),
+            modelsRoot: root,
+            whisperDirectory: whisper,
+            estLLMDirectory: estLLM,
             neurokoneBinary: root.appendingPathComponent("bin/neurokone-cli")
         )
     }
 
-    /// Pick the best installed EstLLM GGUF for this Mac.
+    /// Pick the best installed EstLLM MLX directory for this Mac.
     ///
-    /// Order: `EZEESTI_LLM_GGUF` override → highest-priority installed variant that fits RAM →
+    /// Order: `EZEESTI_LLM_DIR` override → highest-priority installed variant that fits RAM →
     /// largest installed variant (undersized-RAM fallback) → `nil` if nothing is on disk.
-    public static func resolveEstLLMGGUF(
-        in llmDir: URL,
+    public static func resolveEstLLMDirectory(
+        in llmParent: URL,
         memoryBytes: UInt64 = ezeestiPhysicalMemoryBytes(),
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL? {
-        if let override = environment["EZEESTI_LLM_GGUF"], !override.isEmpty {
-            let url = URL(fileURLWithPath: override)
-            if isReachable(url) { return url }
+        if let override = environment["EZEESTI_LLM_DIR"], !override.isEmpty {
+            let url = URL(fileURLWithPath: override, isDirectory: true)
+            if isModelDirectoryReady(url) { return url }
         }
 
         let installed = EstLLMVariant.all.compactMap { variant -> (EstLLMVariant, URL)? in
-            let url = llmDir.appendingPathComponent(variant.filename)
-            guard isReachable(url) else { return nil }
+            let url = llmParent.appendingPathComponent(variant.directoryName, isDirectory: true)
+            guard isModelDirectoryReady(url) else { return nil }
             return (variant, url)
         }
 
@@ -225,7 +244,7 @@ public struct ModelPaths: Sendable {
             return fit.1
         }
 
-        // Force-downloaded larger model on a smaller Mac — still try it.
+        // Force-converted larger model on a smaller Mac — still try it.
         return installed.max(by: { $0.0.priority < $1.0.priority })?.1
     }
 
@@ -233,14 +252,22 @@ public struct ModelPaths: Sendable {
         ezeestiPhysicalMemoryBytes()
     }
 
-    private static func isReachable(_ url: URL) -> Bool {
-        (try? url.checkResourceIsReachable()) == true
+    /// A converted MLX model dir is ready when it exists and contains any file.
+    public static func isModelDirectoryReady(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue
+        else { return false }
+        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: url.path) else {
+            return false
+        }
+        return !contents.isEmpty
     }
 }
 
 /// User-facing failures from recording, models, and bundled content.
 public enum EzeestiError: Error, LocalizedError, Sendable {
     case modelMissing(String)
+    case omlxUnavailable(String)
     case recordingFailed(String)
     case transcriptionFailed(String)
     case llmFailed(String)
@@ -249,7 +276,10 @@ public enum EzeestiError: Error, LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .modelMissing(let name): return "Model missing: \(name). Run Scripts/fetch-models.sh"
+        case .modelMissing(let name):
+            return "Model missing: \(name). Run Scripts/fetch-models.sh then start OMLX."
+        case .omlxUnavailable(let reason):
+            return "OMLX unavailable: \(reason)"
         case .recordingFailed(let reason): return "Recording failed: \(reason)"
         case .transcriptionFailed(let reason): return "Transcription failed: \(reason)"
         case .llmFailed(let reason): return "Tutor model failed: \(reason)"

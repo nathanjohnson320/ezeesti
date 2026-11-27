@@ -7,7 +7,7 @@ import EzeestiTTS
 import EzeestiTutor
 import EzeestiLearning
 
-/// App root: boots shared native models, shows warmup, then the learning session.
+/// App root: boots shared OMLX backends, shows warmup, then the learning session.
 public struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var engines = EngineHolder()
@@ -90,27 +90,28 @@ final class EngineHolder {
         )
     }
 
-    /// Builds the shared native stack, boots learning, and warms tutor models once.
+    /// Builds the shared OMLX clients, boots learning, and warms tutor models once.
     func start(modelContext: ModelContext) async {
         guard !hasStarted else { return }
         hasStarted = true
         do {
             let paths = try ModelPaths.defaultApplicationSupport()
-            guard paths.whisperNativeReady,
-                  let whisperModel = paths.whisperGGML,
-                  let whisperLib = paths.whisperLibDir
-            else {
-                throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
+            guard paths.whisperReady else {
+                throw EzeestiError.modelMissing(
+                    "Whisper MLX — run Scripts/fetch-models.sh then: omlx serve --model-dir \"\(paths.modelsRoot.path)\""
+                )
             }
-            guard paths.llamaNativeReady,
-                  let llamaModel = paths.estLLMGGUF,
-                  let llamaLib = paths.llamaLibDir
-            else {
-                throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
+            guard paths.llmReady else {
+                throw EzeestiError.modelMissing(
+                    "EstLLM MLX — run Scripts/fetch-models.sh then: omlx serve --model-dir \"\(paths.modelsRoot.path)\""
+                )
             }
-            // One shared native stack for tutor + learning (avoid double Metal residency).
-            let whisper = WhisperCppService(modelPath: whisperModel, libDir: whisperLib)
-            let llama = LlamaCppService(modelPath: llamaModel, libDir: llamaLib)
+
+            let omlx = OmlxConfig.fromEnvironment(modelPaths: paths)
+            // One HTTP client for tutor + learning (same server / model IDs).
+            let client = OmlxClient(config: omlx)
+            let whisper = OmlxSpeechRecognizer(client: client)
+            let llama = OmlxLanguageModel(client: client)
             // Neurokõne when available; otherwise macOS system speech (no gated HF access needed).
             let speaker = TTSBackend.resolve(modelPaths: paths)
 

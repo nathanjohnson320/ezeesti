@@ -80,20 +80,26 @@ public final class LearningEngine {
             paths = try ModelPaths.defaultApplicationSupport()
         }
 
+        let omlx = OmlxConfig.fromEnvironment(modelPaths: paths)
+
         if let recognizer {
             self.recognizer = recognizer
-        } else if paths.whisperNativeReady, let model = paths.whisperGGML, let lib = paths.whisperLibDir {
-            self.recognizer = WhisperCppService(modelPath: model, libDir: lib)
+        } else if paths.whisperReady {
+            self.recognizer = ASRBackend.resolve(config: omlx)
         } else {
-            throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
+            throw EzeestiError.modelMissing(
+                "Whisper MLX dir — run Scripts/fetch-models.sh then omlx serve --model-dir \"\(paths.modelsRoot.path)\""
+            )
         }
 
         if let languageModel {
             self.languageModel = languageModel
-        } else if paths.llamaNativeReady, let model = paths.estLLMGGUF, let lib = paths.llamaLibDir {
-            self.languageModel = LlamaCppService(modelPath: model, libDir: lib)
+        } else if paths.llmReady {
+            self.languageModel = LLMBackend.resolve(config: omlx)
         } else {
-            throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
+            throw EzeestiError.modelMissing(
+                "EstLLM MLX dir — run Scripts/fetch-models.sh then omlx serve --model-dir \"\(paths.modelsRoot.path)\""
+            )
         }
 
         self.speaker = speaker ?? TTSBackend.resolve(modelPaths: paths)

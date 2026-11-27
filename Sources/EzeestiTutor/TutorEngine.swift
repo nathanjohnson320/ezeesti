@@ -92,25 +92,31 @@ public final class TutorEngine {
         self.modelPaths = paths
         self.recorder = recorder ?? MicrophoneRecorder()
 
+        let omlx = OmlxConfig.fromEnvironment(modelPaths: paths)
+
         if let recognizer {
             self.recognizer = recognizer
-        } else if paths.whisperNativeReady, let model = paths.whisperGGML, let lib = paths.whisperLibDir {
-            self.recognizer = WhisperCppService(modelPath: model, libDir: lib)
+        } else if paths.whisperReady {
+            self.recognizer = ASRBackend.resolve(config: omlx)
         } else {
-            throw EzeestiError.modelMissing("Whisper weights or libEzeestiWhisper.dylib")
+            throw EzeestiError.modelMissing(
+                "Whisper MLX dir — run Scripts/fetch-models.sh then omlx serve --model-dir \"\(paths.modelsRoot.path)\""
+            )
         }
 
         if let languageModel {
             self.languageModel = languageModel
-        } else if paths.llamaNativeReady, let model = paths.estLLMGGUF, let lib = paths.llamaLibDir {
-            self.languageModel = LlamaCppService(modelPath: model, libDir: lib)
+        } else if paths.llmReady {
+            self.languageModel = LLMBackend.resolve(config: omlx)
         } else {
-            throw EzeestiError.modelMissing("EstLLM weights or libEzeestiLlama.dylib")
+            throw EzeestiError.modelMissing(
+                "EstLLM MLX dir — run Scripts/fetch-models.sh then omlx serve --model-dir \"\(paths.modelsRoot.path)\""
+            )
         }
 
         self.speaker = speaker ?? TTSBackend.resolve(modelPaths: paths)
 
-        // Free Metal-backed models before process teardown (avoids ggml residency-set assert).
+        // Best-effort client shutdown on quit (HTTP backends are no-ops).
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -128,7 +134,7 @@ public final class TutorEngine {
         }
     }
 
-    /// Unload in-process Whisper / EstLLM before Metal / process teardown.
+    /// Release recognizer / LLM resources before process teardown.
     func shutdownNativeModels() async {
         await recognizer.shutdown()
         await languageModel.shutdown()
@@ -147,14 +153,14 @@ public final class TutorEngine {
         }
     }
 
-    /// Preload Whisper (kept warm), prime EstLLM, then warm Neurokõne before practice.
+    /// Confirm OMLX models are listed, then warm Neurokõne before practice.
     public func warmupModels() async throws {
         warmupState = .loadingWhisper
-        warmupDetail = "Loading Whisper on GPU…"
+        warmupDetail = "Checking OMLX Whisper…"
         try await recognizer.warmup()
 
         warmupState = .loadingTutor
-        warmupDetail = "Priming EstLLM…"
+        warmupDetail = "Checking OMLX EstLLM…"
         try await languageModel.warmup()
 
         warmupState = .loadingVoice

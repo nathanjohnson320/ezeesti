@@ -4,22 +4,28 @@ Offline Estonian learning app for Apple Silicon Macs (M1–M4).
 
 Speak → Whisper transcribes → EstLLM explains the grammar "why" → hear the correction → retry.
 
+Inference runs through a required local [OMLX](https://github.com/jundot/omlx) server (OpenAI-compatible chat + transcription APIs). Neurokõne TTS stays optional as a Python CLI.
+
 ## Requirements
 
-- macOS 14+, Xcode 16+, Apple Silicon
-- Disk for models: ~7 GB with EstLLM 8B, or ~50 GB when auto-selecting EstLLM 70B (≥48 GiB RAM)
-- `brew install cmake git python@3.10`
+- macOS 15+, Xcode 16+, Apple Silicon
+- [OMLX](https://omlx.ai/) installed and running (`brew tap jundot/omlx https://github.com/jundot/omlx && brew install jundot/omlx/omlx`)
+- Disk for models: roughly ~7 GB with EstLLM 8B 4-bit + Whisper, or much more when converting EstLLM 70B (≥48 GiB RAM). Conversion also needs temporary Hugging Face download space.
+- `brew install cmake git python@3.10` (Neurokõne only; see below)
 
 Neurokõne needs Python 3.9–3.11 specifically — TensorFlow 2.13 publishes no wheels for 3.12+. A newer default `python3` will fail with `No matching distribution found for tensorflow`.
 
 ## Easy setup
 
-### 1. Install models
+### 1. Install OMLX + convert models
 
 ```bash
+brew tap jundot/omlx https://github.com/jundot/omlx
+brew install jundot/omlx/omlx
+
 chmod +x Scripts/*.sh
 # Without TartuNLP HF access (recommended default for local bring-up):
-SKIP_TTS=1 ./Scripts/fetch-models.sh   # Whisper + EstLLM + dylibs; Hear uses macOS speech
+SKIP_TTS=1 ./Scripts/fetch-models.sh   # Whisper + EstLLM MLX; Hear uses macOS speech
 # Optional Neurokõne later (gated tartuNLP/fastpitch-est — needs approved access + token):
 #   export HF_TOKEN=hf_…
 #   ./Scripts/fetch-models.sh && ./Scripts/setup-neurokone.sh
@@ -27,27 +33,33 @@ SKIP_TTS=1 ./Scripts/fetch-models.sh   # Whisper + EstLLM + dylibs; Hear uses ma
 
 `fetch-models.sh` picks EstLLM by physical RAM (`EZEESTI_LLM=auto`, default):
 
-| RAM | Model | Disk |
+| RAM | Model | Notes |
 | --- | --- | --- |
-| ≥48 GiB | `Llama-3.1-EstLLM-70B-Instruct-0826` Q4_K_M (~43 GB) | ~50 GB total |
-| &lt;48 GiB | `Llama-3.1-EstLLM-8B-Instruct-1125` Q4_K_M (~5 GB) | ~7 GB total |
+| ≥48 GiB | `Llama-3.1-EstLLM-70B-Instruct-0826-4bit` | Large HF download + MLX convert |
+| &lt;48 GiB | `Llama-3.1-EstLLM-8B-Instruct-1125-4bit` | Default |
 
-Override with `EZEESTI_LLM=8b|70b|both`, or point at a custom GGUF with `EZEESTI_LLM_GGUF=/path/to/model.gguf`. The app resolves the best *installed* GGUF the same way at launch.
+Override with `EZEESTI_LLM=8b|70b|both`, or point at a custom MLX directory with `EZEESTI_LLM_DIR=/path/to/model`. The app resolves the best *installed* EstLLM directory the same way at launch.
 
-The 70B file is a community Q4_K_M of [tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826](https://huggingface.co/tartuNLP/Llama-3.1-EstLLM-70B-Instruct-0826); first load is slower than 8B.
+Everything lands in `~/Library/Application Support/Ezeesti/Models/`. Whisper is converted from [TalTechNLP/whisper-large-v3-turbo-et-verbatim-2604](https://huggingface.co/TalTechNLP/whisper-large-v3-turbo-et-verbatim-2604); EstLLM from the tartuNLP Hugging Face instruct checkpoints via `mlx_lm.convert`.
 
-Everything lands in `~/Library/Application Support/Ezeesti/Models/`.
+### 2. Start OMLX
 
-> Already have Whisper/EstLLM weights? You can still run `fetch-models.sh` — it skips existing files — then `setup-neurokone.sh` for the v3.2.0 Python worker.
+```bash
+omlx serve --model-dir "$HOME/Library/Application Support/Ezeesti/Models"
+# Confirm IDs:
+curl -s http://127.0.0.1:8000/v1/models | python3 -m json.tool
+```
 
-### 2. Run the app
+Optional env overrides for the app: `EZEESTI_OMLX_BASE_URL` (default `http://127.0.0.1:8000/v1`), `EZEESTI_OMLX_API_KEY`, `EZEESTI_OMLX_LLM_MODEL`, `EZEESTI_OMLX_STT_MODEL`.
+
+### 3. Run the app
 
 ```bash
 xcodegen generate      # only if Ezeesti.xcodeproj is missing
 open Ezeesti.xcodeproj
 ```
 
-Run the **Ezeesti** scheme. The app auto-detects Whisper, EstLLM, and `neurokone-cli`. First **Hear target** playback is slow while TensorFlow / HiFi-GAN load.
+Run the **Ezeesti** scheme. The app checks OMLX for Whisper + EstLLM, then warms Neurokõne when installed. First **Hear target** playback is slow while TensorFlow / HiFi-GAN load.
 
 ## Optional data refresh
 
@@ -55,7 +67,7 @@ These are prebuilt and committed; only regenerate if you want to update them.
 
 ```bash
 ./Scripts/fetch-lexicon.sh                 # ~10k CEFR-first Estonian word list
-./Scripts/generate-glosses.sh              # English glosses (A1–B2 + graded text)
+./Scripts/generate-glosses.sh              # English glosses via OMLX EstLLM (A1–B2 + graded text)
 ./Scripts/generate-glosses.sh --limit 40   # smoke test
 ```
 
@@ -66,18 +78,17 @@ The lexicon is a dictionary catalog, not "known" vocabulary — your known % sti
 ```
 App/                 SwiftUI macOS entry
 Sources/
-  EzeestiCore/       CEFR, lexicon, model paths, lesson packs
-  EzeestiASR/        mic + in-process Whisper (dlopen)
-  EzeestiLLM/        EstLLM prompts + in-process llama.cpp (dlopen)
+  EzeestiCore/       CEFR, lexicon, model paths, OMLX client
+  EzeestiASR/        mic + OMLX /v1/audio/transcriptions
+  EzeestiLLM/        EstLLM prompts + OMLX /v1/chat/completions
   EzeestiTTS/        Neurokõne CLI
   EzeestiLearning/   vocab store + Learn session engine
   EzeestiTutor/      model warmup (+ unused drill engine for later)
   EzeestiUI/         Learn UI
-Native/              C bridges compiled into libEzeesti*.dylib by fetch-models.sh
-Scripts/             model, lexicon, gloss, and TTS setup
+Scripts/             model convert, lexicon, gloss, and TTS setup
 ```
 
-ASR and the tutor LLM run **in-process** via Metal-backed dylibs (`libEzeestiWhisper` / `libEzeestiLlama`), each `dlopen`ed with `RTLD_LOCAL` so they keep separate ggml copies. Weights stay on disk in Application Support. Neurokõne TTS runs as a Python CLI.
+ASR and the tutor LLM talk to a **required local OMLX server** over HTTP. Converted MLX weights stay on disk in Application Support. Neurokõne TTS runs as a Python CLI when installed; otherwise macOS speech is used.
 
 ## License notes
 
