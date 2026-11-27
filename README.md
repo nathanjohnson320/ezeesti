@@ -52,6 +52,8 @@ curl -s http://127.0.0.1:8000/v1/models | python3 -m json.tool
 
 Optional env overrides for the app: `EZEESTI_OMLX_BASE_URL` (default `http://127.0.0.1:8000/v1`), `EZEESTI_OMLX_API_KEY`, `EZEESTI_OMLX_LLM_MODEL`, `EZEESTI_OMLX_STT_MODEL`.
 
+If OMLX auth is enabled (default in the macOS app), Ezeesti reads the API key from `~/.omlx/settings.json` automatically. Override with `EZEESTI_OMLX_API_KEY` if needed (Xcode scheme → Run → Arguments → Environment Variables).
+
 ### 3. Run the app
 
 ```bash

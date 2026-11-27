@@ -21,6 +21,9 @@ public struct OmlxConfig: Sendable, Hashable {
 
     /// Reads `EZEESTI_OMLX_BASE_URL`, `EZEESTI_OMLX_API_KEY`, `EZEESTI_OMLX_LLM_MODEL`,
     /// and `EZEESTI_OMLX_STT_MODEL` (empty key clears auth).
+    ///
+    /// If `EZEESTI_OMLX_API_KEY` is unset, falls back to `~/.omlx/settings.json` → `auth.api_key`
+    /// (same key the OMLX macOS app uses).
     public static func fromEnvironment(
         _ environment: [String: String] = ProcessInfo.processInfo.environment,
         modelPaths: ModelPaths? = nil
@@ -38,7 +41,7 @@ public struct OmlxConfig: Sendable, Hashable {
         if let key = environment["EZEESTI_OMLX_API_KEY"] {
             apiKey = key.isEmpty ? nil : key
         } else {
-            apiKey = nil
+            apiKey = readApiKeyFromOmlxSettings()
         }
 
         let llmDefault = modelPaths?.estLLMDirectory?.lastPathComponent
@@ -50,6 +53,24 @@ public struct OmlxConfig: Sendable, Hashable {
         let stt = environment["EZEESTI_OMLX_STT_MODEL"].flatMap { $0.isEmpty ? nil : $0 } ?? sttDefault
 
         return OmlxConfig(baseURL: base, apiKey: apiKey, llmModelID: llm, sttModelID: stt)
+    }
+
+    /// Loads `auth.api_key` from `~/.omlx/settings.json` when present.
+    public static func readApiKeyFromOmlxSettings(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String? {
+        let url = homeDirectory
+            .appendingPathComponent(".omlx", isDirectory: true)
+            .appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let auth = root["auth"] as? [String: Any],
+              let key = auth["api_key"] as? String
+        else {
+            return nil
+        }
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     public var modelsURL: URL {
